@@ -161,25 +161,6 @@ const route = (method, pattern, roles, handler) => routes.push({ method, re: new
 const ALL = ['admin', 'manager', 'sales', 'accountant'];
 const MGR = ['admin', 'manager'];
 
-// عام (المتجر)
-route('GET', '/api/store/info', null, () => ({ name: getSetting('store_name', 'بيت النوى'), whatsapp: getSetting('whatsapp', ''), categories: CATEGORIES }));
-route('GET', '/api/store/products', null, () => all('SELECT * FROM products WHERE active=1 ORDER BY category,name').map((p) => ({
-  id: p.id, name: p.name, category: p.category, unit: p.unit, description: p.description, image: p.image,
-  price: p.price, final_price: effectivePrice(p), offer_percent: effectivePrice(p) < p.price ? p.offer_percent : 0,
-  offer_ends: effectivePrice(p) < p.price ? p.offer_ends : null, in_stock: p.stock > 0 })));
-const rate = new Map();
-route('POST', '/api/store/order', null, ({ body, ip }) => {
-  const now = Date.now(); const hits = (rate.get(ip) || []).filter((t) => now - t < 3600e3);
-  if (hits.length >= 10) throw new HttpError(429, 'طلبات كثيرة، حاول لاحقاً');
-  rate.set(ip, [...hits, now]);
-  const name = str(body.name, 100), phone = str(body.phone, 20);
-  if (!name || !phone || !/^[0-9+\s-]{7,20}$/.test(phone)) throw bad('الاسم ورقم جوال صحيح مطلوبان');
-  let cust = get('SELECT id FROM customers WHERE phone=?', phone);
-  if (!cust) cust = { id: Number(run('INSERT INTO customers(name,phone,city) VALUES(?,?,?)', name, phone, str(body.city, 60)).lastInsertRowid) };
-  const id = createOrder({ items: body.items, customer_id: cust.id, customer_name: name, customer_phone: phone, status: 'pending', channel: 'store', notes: str(body.notes) });
-  return { id, message: 'تم استلام طلبك وسنتواصل معك قريباً' };
-});
-
 // المصادقة
 const attempts = new Map();
 route('POST', '/api/login', null, ({ body, ip }) => {
@@ -310,10 +291,8 @@ route('GET', '/api/market/news', MGR.concat('accountant'), async ({ query }) => 
 });
 
 // الإعدادات
-route('GET', '/api/settings', ['admin'], () => ({ store_name: getSetting('store_name', 'بيت النوى'), whatsapp: getSetting('whatsapp', ''), vat_rate: getSetting('vat_rate', '15') }));
+route('GET', '/api/settings', ['admin'], () => ({ vat_rate: getSetting('vat_rate', '15') }));
 route('PUT', '/api/settings', ['admin'], ({ body }) => {
-  if ('store_name' in body) setSetting('store_name', str(body.store_name, 80));
-  if ('whatsapp' in body) setSetting('whatsapp', String(body.whatsapp || '').replace(/[^0-9]/g, '').slice(0, 15));
   if ('vat_rate' in body) { const v = num(body.vat_rate, -1); if (v < 0 || v > 50) throw bad('نسبة ضريبة غير صحيحة'); setSetting('vat_rate', v); }
   return { ok: true };
 });
@@ -349,7 +328,7 @@ export const server = http.createServer(async (req, res) => {
     }
     // ملفات ثابتة
     let p = decodeURIComponent(url.pathname);
-    if (p === '/') p = '/index.html'; else if (p === '/admin') p = '/admin.html';
+    if (p === '/' || p === '/admin') p = '/admin.html';
     const file = path.join(PUB, path.normalize(p));
     if (!file.startsWith(PUB + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'غير موجود', { 'content-type': 'text/plain; charset=utf-8' });
     send(res, 200, fs.readFileSync(file), { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });

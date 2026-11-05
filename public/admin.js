@@ -90,7 +90,7 @@ crud('products', 'المنتجات والعروض', [
   { k: 'unit', l: 'الوحدة (كجم/جرام/حبة)' }, { k: 'price', l: 'سعر البيع (شامل الضريبة)', t: 'number' }, { k: 'cost', l: 'تكلفة الشراء', t: 'number' },
   { k: 'stock', l: 'المخزون الحالي', t: 'number' }, { k: 'reorder_level', l: 'حد إعادة الطلب', t: 'number' }, { k: 'lead_days', l: 'مدة التوريد (أيام)', t: 'number' },
   { k: 'supplier_id', l: 'المورد', t: 'select', opts: await supplierOpts() }, { k: 'offer_percent', l: 'خصم العرض %', t: 'number' }, { k: 'offer_ends', l: 'نهاية العرض', t: 'date' },
-  { k: 'image', l: 'رابط صورة (اختياري)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في المتجر', t: 'checkbox' },
+  { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في المتجر', t: 'checkbox' },
 ], true, 'category');
 crud('customers', 'العملاء', [{ l: 'الاسم', k: 'name' }, { l: 'الجوال', k: 'phone' }, { l: 'المدينة', k: 'city' }, { l: 'النوع', k: 'type' }, { l: 'ملاحظات', k: 'notes' }, { l: 'منذ', f: (r) => r.created_at.slice(0, 10) }],
   async () => [{ k: 'name', l: 'الاسم', req: 1 }, { k: 'phone', l: 'الجوال' }, { k: 'city', l: 'المدينة' }, { k: 'type', l: 'النوع', t: 'select', opts: [['فرد', 'فرد'], ['تجاري', 'تجاري (مطعم/مقهى/متجر)']] }, { k: 'notes', l: 'ملاحظات', t: 'textarea' }], true);
@@ -216,7 +216,7 @@ pages.orders = async (root) => {
   const rows = all0.filter((r) => (!flt.s || r.status === flt.s) && (!flt.q || JSON.stringify(Object.values(r)).includes(flt.q)));
   root.innerHTML = `<div class="bar"><h1>الطلبات <small class="l">(${rows.length})</small></h1><span><input id="oq" placeholder="بحث..." value="${esc(flt.q)}" style="width:160px"> <button class="btn" id="n">+ بيع جديد</button></span></div>
   <div class="tabs">${[['', 'الكل'], ['pending', 'قيد الانتظار (' + all0.filter((r) => r.status === 'pending').length + ')'], ['completed', 'مكتمل'], ['cancelled', 'ملغي']].map(([k, l]) => `<button data-fs="${k}" class="${flt.s === k ? 'on' : ''}">${l}</button>`).join('')}</div>${table([
-    { l: '#', k: 'id' }, { l: 'التاريخ', f: (r) => r.created_at.slice(0, 16) }, { l: 'العميل', k: 'cname' }, { l: 'القناة', f: (r) => (r.channel === 'store' ? 'المتجر' : 'نقطة بيع') },
+    { l: '#', k: 'id' }, { l: 'التاريخ', f: (r) => r.created_at.slice(0, 16) }, { l: 'العميل', k: 'cname' }, 
     { l: 'الأصناف', k: 'items' }, { l: 'الإجمالي', f: (r) => money(r.total) }, { l: 'الحالة', html: (r) => badge(r.status) }],
     rows, (r) => `<button class="btn sm ghost" data-v="${r.id}">عرض</button>${r.status === 'pending' ? ` <button class="btn sm" data-s="completed" data-id="${r.id}">تأكيد</button>` : ''}${r.status !== 'cancelled' ? ` <button class="btn sm danger" data-s="cancelled" data-id="${r.id}">إلغاء</button>` : ''}`)}`;
   $('#n').onclick = () => nav('sale');
@@ -333,7 +333,7 @@ pages.users = async (root) => {
 };
 pages.settings = async (root) => {
   const s = await api('/settings');
-  root.innerHTML = `<div class="bar"><h1>الإعدادات</h1></div><div class="grid g2"><form class="card" id="f"><b>المتجر</b><label>اسم المتجر</label><input name="store_name" value="${esc(s.store_name)}"><label>واتساب (بدون +)</label><input name="whatsapp" value="${esc(s.whatsapp)}"><label>نسبة ضريبة القيمة المضافة %</label><input name="vat_rate" type="number" value="${esc(s.vat_rate)}"><p><button class="btn">حفظ</button></p></form>
+  root.innerHTML = `<div class="bar"><h1>الإعدادات</h1></div><div class="grid g2"><form class="card" id="f"><b>الضريبة</b><label>نسبة ضريبة القيمة المضافة %</label><input name="vat_rate" type="number" value="${esc(s.vat_rate)}"><p><button class="btn">حفظ</button></p></form>
   <form class="card" id="p"><b>تغيير كلمة مروري</b><label>الحالية</label><input type="password" name="old"><label>الجديدة (8+)</label><input type="password" name="new"><p><button class="btn">تغيير</button></p></form></div>`;
   $('#f').onsubmit = guard(async (e) => { e.preventDefault(); await api('/settings', 'PUT', Object.fromEntries(new FormData(e.target))); toast('تم الحفظ'); });
   $('#p').onsubmit = guard(async (e) => { e.preventDefault(); await api('/me/password', 'POST', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('تم التغيير'); });
@@ -355,7 +355,7 @@ async function nav(p) {
 }
 function showApp() {
   const items = NAV.filter((n) => n[2].includes(me.role));
-  $('#app').innerHTML = `<div class="layout"><nav class="side"><h2>🌴 بيت النوى</h2>${items.map((n) => `<a data-p="${n[0]}">${n[1]}</a>`).join('')}<a href="/" target="_blank">المتجر ↗</a><hr><small style="padding:0 .8rem">${esc(me.name)} (${ROLE[me.role]})</small><a id="lo">خروج</a></nav><main class="main" id="content"></main></div>`;
+  $('#app').innerHTML = `<div class="layout"><nav class="side"><h2>🌴 بيت النوى</h2>${items.map((n) => `<a data-p="${n[0]}">${n[1]}</a>`).join('')}<hr><small style="padding:0 .8rem">${esc(me.name)} (${ROLE[me.role]})</small><a id="lo">خروج</a></nav><main class="main" id="content"></main></div>`;
   document.querySelectorAll('.side a[data-p]').forEach((a) => (a.onclick = () => nav(a.dataset.p)));
   $('#lo').onclick = logout;
   const h = location.hash.slice(1); nav(items.find((n) => n[0] === h) ? h : items[0][0]);
