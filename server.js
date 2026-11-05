@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +26,7 @@ const round2 = (n) => Math.round(n * 100) / 100;
 // ---------- CRUD عام ----------
 const ENTITIES = {
   products: { table: 'products', roles: ['admin', 'manager', 'sales'], write: ['admin', 'manager'], fields: {
-    name: 'text', category: 'cat', unit: 'text', price: 'num', cost: 'num', stock: 'num', reorder_level: 'num', lead_days: 'int',
+    name: 'text', sku: 'text', category: 'cat', unit: 'text', price: 'num', cost: 'num', stock: 'num', reorder_level: 'num', lead_days: 'int',
     supplier_id: 'id', description: 'text', image: 'text', offer_percent: 'pct', offer_ends: 'date', active: 'bool' }, req: ['name', 'category'] },
   customers: { table: 'customers', roles: ['admin', 'manager', 'sales', 'accountant'], write: ['admin', 'manager', 'sales'], fields: {
     name: 'text', phone: 'text', city: 'text', type: 'text', notes: 'text' }, req: ['name'] },
@@ -53,51 +54,108 @@ function clean(ent, body, partial) {
   return out;
 }
 
-// ---------- منطق الطلبات ----------
-function buildItems(items) {
-  if (!Array.isArray(items) || !items.length) throw bad('السلة فارغة');
-  return items.map((it) => {
-    const p = get('SELECT * FROM products WHERE id=? AND active=1', Math.round(num(it.product_id)));
-    const qty = num(it.qty);
-    if (!p) throw bad('منتج غير موجود');
-    if (qty <= 0) throw bad('كمية غير صحيحة');
-    return { p, qty, price: effectivePrice(p) };
-  });
+// ---------- تسجيل المبيعات (متابعة فقط، بلا فواتير) ----------
+const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+const latin = (s) => String(s ?? '').replace(/[٠-٩]/g, (d) => AR_DIGITS.indexOf(d)).trim();
+function parseDate(v) {
+  const s = latin(v);
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (!m) { const k = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/); if (k) m = [k[0], k[3], k[2], k[1]]; }
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3], dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  const iso = dt.toISOString().slice(0, 10);
+  if (iso > new Date(Date.now() + 86400000).toISOString().slice(0, 10) || y < new Date().getFullYear() - 5) return null;
+  return iso;
 }
-function createOrder({ items, customer_id = null, customer_name = null, customer_phone = null, discount = 0, status, channel, user_id = null, notes = null }) {
-  const lines = buildItems(items);
-  return tx(() => {
-    const subtotal = round2(lines.reduce((s, l) => s + l.price * l.qty, 0));
-    const disc = Math.min(Math.max(num(discount), 0), subtotal);
-    const total = round2(subtotal - disc);
-    const vat = round2(total * vatRate() / (100 + vatRate())); // الأسعار شاملة الضريبة
-    const r = run(`INSERT INTO orders(customer_id,customer_name,customer_phone,user_id,channel,status,subtotal,discount,vat,total,notes)
-      VALUES(?,?,?,?,?,'pending',?,?,?,?,?)`, customer_id, customer_name, customer_phone, user_id, channel, subtotal, disc, vat, total, notes);
-    const id = Number(r.lastInsertRowid);
-    for (const l of lines) run('INSERT INTO order_items(order_id,product_id,name,qty,price,cost) VALUES(?,?,?,?,?,?)', id, l.p.id, l.p.name, l.qty, l.price, l.p.cost);
-    if (status === 'completed') setOrderStatus(id, 'completed');
-    return id;
-  });
+const parseNum = (v) => { let s = latin(v).replace(/٫/g, '.').replace(/\s/g, ''); if (s.includes(',') && !s.includes('.')) s = s.replace(',', '.'); else s = s.replace(/,/g, ''); const n = Number(s); return s !== '' && Number.isFinite(n) ? n : null; };
+const sqlTime = (date) => (date === today() ? new Date().toISOString().slice(0, 19).replace('T', ' ') : `${date} 12:00:00`);
+
+function productFinder() {
+  const all0 = all('SELECT * FROM products');
+  const bySku = new Map(all0.filter((p) => p.sku).map((p) => [p.sku.toLowerCase(), p]));
+  const byName = new Map(all0.map((p) => [p.name.trim(), p]));
+  return (key) => { const k = latin(key); return bySku.get(k.toLowerCase()) || byName.get(String(key ?? '').trim()) || null; };
 }
-function setOrderStatus(id, status) {
-  const o = get('SELECT * FROM orders WHERE id=?', id);
-  if (!o) throw new HttpError(404, 'الطلب غير موجود');
-  if (o.status === status) return;
-  if (!['pending', 'completed', 'cancelled'].includes(status)) throw bad('حالة غير صحيحة');
+
+// groups: [{ref, date, customer_id, customer_name, discount, notes, items:[{product, qty, price|null}]}]
+function recordSales(groups, { updateStock, channel, userId = null }) {
+  const out = { created: 0, skipped: 0, ids: [] };
   tx(() => {
-    const items = all('SELECT * FROM order_items WHERE order_id=?', id);
-    if (status === 'completed' && o.status !== 'completed') {
-      for (const i of items) {
-        const p = get('SELECT stock,name FROM products WHERE id=?', i.product_id);
-        if (p && p.stock < i.qty) throw bad(`المخزون غير كاف: ${p.name} (المتوفر ${p.stock})`);
+    for (const g of groups) {
+      if (g.ref && get('SELECT 1 FROM orders WHERE external_ref=?', g.ref)) { out.skipped++; continue; }
+      let subtotal = 0;
+      const lines = g.items.map((it) => { const price = it.price ?? effectivePrice(it.product); subtotal += price * it.qty; return { ...it, price }; });
+      subtotal = round2(subtotal);
+      const disc = Math.min(Math.max(num(g.discount), 0), subtotal), total = round2(subtotal - disc);
+      const vat = round2(total * vatRate() / (100 + vatRate()));
+      const id = Number(run(`INSERT INTO orders(customer_id,customer_name,user_id,channel,status,subtotal,discount,vat,total,notes,created_at,external_ref,stock_applied)
+        VALUES(?,?,?,?,'completed',?,?,?,?,?,?,?,?)`, g.customer_id || null, g.customer_name || null, userId, channel, subtotal, disc, vat, total, g.notes || null, sqlTime(g.date), g.ref || null, updateStock ? 1 : 0).lastInsertRowid);
+      for (const l of lines) {
+        run('INSERT INTO order_items(order_id,product_id,name,qty,price,cost) VALUES(?,?,?,?,?,?)', id, l.product.id, l.product.name, l.qty, l.price, l.product.cost);
+        if (updateStock) run('UPDATE products SET stock=MAX(stock-?,0) WHERE id=?', l.qty, l.product.id);
       }
-      for (const i of items) run('UPDATE products SET stock=stock-? WHERE id=?', i.qty, i.product_id);
-    } else if (o.status === 'completed') {
-      for (const i of items) run('UPDATE products SET stock=stock+? WHERE id=?', i.qty, i.product_id);
+      out.created++; out.ids.push(id);
     }
-    run('UPDATE orders SET status=? WHERE id=?', status, id);
+  });
+  return out;
+}
+function deleteSale(id) {
+  const o = get('SELECT * FROM orders WHERE id=?', id);
+  if (!o) throw new HttpError(404, 'السجل غير موجود');
+  tx(() => {
+    if (o.stock_applied) for (const i of all('SELECT * FROM order_items WHERE order_id=?', id)) run('UPDATE products SET stock=stock+? WHERE id=?', i.qty, i.product_id);
+    run('DELETE FROM orders WHERE id=?', id);
   });
 }
+
+// قراءة CSV/TSV (من Excel: حفظ باسم CSV أو نسخ الخلايا ولصقها)
+function parseTable(text) {
+  text = String(text || '').replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0] || '';
+  const delim = ['\t', ';', ','].map((d) => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+    else if (c === '"') q = true;
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); cell = ''; if (row.some((x) => x.trim())) rows.push(row); row = []; }
+    else cell += c;
+  }
+  row.push(cell); if (row.some((x) => x.trim())) rows.push(row);
+  return rows;
+}
+const HEAD = {
+  date: ['التاريخ', 'date'], product: ['المنتج', 'الصنف', 'product', 'sku', 'item', 'الرمز', 'الباركود', 'اسم المنتج'],
+  qty: ['الكمية', 'qty', 'quantity'], price: ['السعر', 'price', 'سعر الوحدة', 'unit price', 'unit_price'],
+  ref: ['رقم العملية', 'رقم الفاتورة', 'ref', 'invoice', 'reference', 'id'], customer: ['العميل', 'customer'],
+};
+function importGroups(text) {
+  const rows = parseTable(text); const errors = [];
+  if (rows.length < 2) throw bad('الملف فارغ أو لا يحتوي صفوف بيانات');
+  const head = rows[0].map((h) => h.trim().toLowerCase()); const col = {};
+  for (const [k, names] of Object.entries(HEAD)) col[k] = head.findIndex((h) => names.includes(h));
+  for (const k of ['date', 'product', 'qty']) if (col[k] < 0) throw bad(`العمود مفقود: ${HEAD[k][0]} (الأعمدة المطلوبة: التاريخ، المنتج، الكمية. اختياري: السعر، رقم العملية، العميل)`);
+  const find = productFinder(); const groups = new Map(); const occ = new Map(); let n = 0;
+  rows.slice(1, 5001).forEach((r, idx) => {
+    const line = idx + 2; const fail = (m) => errors.push({ line, error: m });
+    const date = parseDate(r[col.date]), qty = parseNum(r[col.qty]), price = col.price >= 0 && String(r[col.price] ?? '').trim() !== '' ? parseNum(r[col.price]) : null;
+    const p = find(r[col.product]);
+    if (!date) return fail('تاريخ غير صحيح');
+    if (!p) return fail(`منتج غير معروف: ${String(r[col.product] ?? '').trim()}`);
+    if (qty == null || qty <= 0) return fail('كمية غير صحيحة');
+    if (col.price >= 0 && String(r[col.price] ?? '').trim() !== '' && (price == null || price < 0)) return fail('سعر غير صحيح');
+    const refRaw = col.ref >= 0 ? String(r[col.ref] ?? '').trim() : '';
+    let ref;
+    if (refRaw) ref = 'ext:' + refRaw.slice(0, 80);
+    else { const base = `row:${date}|${p.id}|${qty}|${price ?? ''}`; const c = (occ.get(base) || 0) + 1; occ.set(base, c); ref = `${base}#${c}`; }
+    const g = groups.get(ref) || { ref, date, customer_name: col.customer >= 0 ? str(r[col.customer], 100) : null, items: [] };
+    g.items.push({ product: p, qty, price }); groups.set(ref, g); n++;
+  });
+  return { groups: [...groups.values()], errors, valid_rows: n, total_rows: Math.min(rows.length - 1, 5000) };
+}
+
 function createPO({ supplier_id, items, notes }) {
   if (!Array.isArray(items) || !items.length) throw bad('لا توجد أصناف');
   return tx(() => {
@@ -144,7 +202,7 @@ function summary(days, category) {
     top_customers: all(`SELECT COALESCE(c.name,o.customer_name,'عميل نقدي') name, COUNT(*) orders, ROUND(SUM(o.total),2) v FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY COALESCE(o.customer_id, o.customer_name) ORDER BY v DESC LIMIT 5`, F),
     by_channel: all(`SELECT channel c, COUNT(*) n, ROUND(SUM(total),2) v FROM orders WHERE status='completed' AND created_at >= ? GROUP BY channel`, F),
     by_weekday: all(`SELECT CAST(strftime('%w',created_at) AS INT) w, ROUND(SUM(total),2) v FROM orders WHERE status='completed' AND created_at >= ? GROUP BY w`, F),
-    pending_orders: get("SELECT COUNT(*) n FROM orders WHERE status='pending'").n,
+    active_offers: get("SELECT COUNT(*) n FROM products WHERE active=1 AND offer_percent>0 AND (offer_ends IS NULL OR offer_ends >= date('now'))").n,
     low_stock: get('SELECT COUNT(*) n FROM products WHERE active=1 AND stock <= reorder_level').n,
     low_stock_items: all('SELECT name, stock, unit, reorder_level FROM products WHERE active=1 AND stock <= reorder_level ORDER BY stock/(reorder_level+0.001) LIMIT 6'),
     inventory_value: round2(get('SELECT COALESCE(SUM(stock*cost),0) v FROM products').v),
@@ -222,17 +280,91 @@ route('PUT', '/api/users/:id', ['admin'], ({ body, params, user }) => {
   return { ok: true };
 });
 
-// الطلبات
+// سجل المبيعات والتسجيل والاستيراد
+const SALES_R = ['admin', 'manager', 'sales'];
 route('GET', '/api/orders', ['admin', 'manager', 'sales', 'accountant'], () => all(`SELECT o.*, COALESCE(c.name,o.customer_name) cname,
-  (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) items FROM orders o LEFT JOIN customers c ON c.id=o.customer_id ORDER BY o.id DESC LIMIT 300`));
+  (SELECT COUNT(*) FROM order_items WHERE order_id=o.id) items FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.status='completed' ORDER BY o.created_at DESC, o.id DESC LIMIT 500`));
 route('GET', '/api/orders/:id', ['admin', 'manager', 'sales', 'accountant'], ({ params }) => {
   const o = get('SELECT * FROM orders WHERE id=?', params.id);
   if (!o) throw new HttpError(404, 'غير موجود');
   return { ...o, items: all('SELECT * FROM order_items WHERE order_id=?', o.id) };
 });
-route('POST', '/api/orders', ['admin', 'manager', 'sales'], ({ body, user }) =>
-  ({ id: createOrder({ items: body.items, customer_id: body.customer_id || null, discount: body.discount, status: body.status === 'pending' ? 'pending' : 'completed', channel: 'pos', user_id: user.id, notes: str(body.notes) }) }));
-route('POST', '/api/orders/:id/status', ['admin', 'manager', 'sales'], ({ params, body }) => { setOrderStatus(Number(params.id), body.status); return { ok: true }; });
+route('DELETE', '/api/orders/:id', MGR, ({ params }) => { deleteSale(Number(params.id)); return { ok: true }; });
+route('POST', '/api/sales', SALES_R, ({ body, user }) => {
+  const date = body.date ? parseDate(body.date) : today();
+  if (!date) throw bad('تاريخ غير صحيح');
+  if (!Array.isArray(body.items) || !body.items.length) throw bad('أضف صنفاً واحداً على الأقل');
+  const items = body.items.map((it) => {
+    const product = get('SELECT * FROM products WHERE id=?', Math.round(num(it.product_id)));
+    const qty = num(it.qty); const price = it.price === '' || it.price == null ? null : num(it.price, -1);
+    if (!product) throw bad('منتج غير موجود');
+    if (qty <= 0) throw bad(`كمية غير صحيحة: ${product.name}`);
+    if (price !== null && price < 0) throw bad(`سعر غير صحيح: ${product.name}`);
+    return { product, qty, price };
+  });
+  const cust = body.customer_id ? get('SELECT id FROM customers WHERE id=?', Math.round(num(body.customer_id))) : null;
+  const r = recordSales([{ date, customer_id: cust?.id, discount: body.discount, notes: str(body.notes), items }], { updateStock: true, channel: 'manual', userId: user.id });
+  return { id: r.ids[0] };
+});
+route('POST', '/api/sales/import', SALES_R, ({ body, user }) => {
+  const parsed = importGroups(body.text);
+  const base = { total_rows: parsed.total_rows, valid_rows: parsed.valid_rows, orders: parsed.groups.length, errors: parsed.errors.slice(0, 50), error_count: parsed.errors.length };
+  if (body.dry_run) return { ...base, dry_run: true };
+  const r = recordSales(parsed.groups, { updateStock: !!body.update_stock, channel: 'import', userId: user.id });
+  return { ...base, created: r.created, skipped: r.skipped };
+});
+
+// عروض عامة (للصفحة العامة): العروض السارية فقط
+route('GET', '/api/offers', null, () => ({
+  whatsapp: getSetting('whatsapp', ''), name: getSetting('store_name', 'بيت النوى'),
+  offers: all('SELECT * FROM products WHERE active=1 AND offer_percent>0 AND stock>0 ORDER BY offer_percent DESC, name').filter((p) => effectivePrice(p) < p.price).map((p) => ({
+    id: p.id, name: p.name, category: p.category, unit: p.unit, description: p.description, price: p.price, final_price: effectivePrice(p), percent: p.offer_percent, ends: p.offer_ends })),
+}));
+
+// الربط مع برنامج المبيعات عبر مفتاح API
+const keyHash = (k) => crypto.createHash('sha256').update(String(k)).digest('hex');
+function checkApiKey(headers, ip) {
+  const now = Date.now(); const a = (attempts.get('k' + ip) || []).filter((t) => now - t < 600e3);
+  if (a.length >= 20) throw new HttpError(429, 'محاولات كثيرة');
+  const stored = getSetting('api_key_hash'); const given = String(headers['x-api-key'] || '');
+  const ok = stored && given && crypto.timingSafeEqual(Buffer.from(keyHash(given)), Buffer.from(stored));
+  if (!ok) { attempts.set('k' + ip, [...a, now]); throw new HttpError(401, 'مفتاح الربط غير صحيح'); }
+}
+route('GET', '/api/integration/status', ['admin'], () => ({ enabled: !!getSetting('api_key_hash') }));
+route('POST', '/api/integration/key', ['admin'], () => {
+  const key = 'bn_' + crypto.randomBytes(24).toString('base64url'); setSetting('api_key_hash', keyHash(key)); return { key };
+});
+route('DELETE', '/api/integration/key', ['admin'], () => { run("DELETE FROM settings WHERE key='api_key_hash'"); return { ok: true }; });
+route('POST', '/api/integration/sales', null, ({ body, headers, ip }) => {
+  checkApiKey(headers, ip);
+  const sales = Array.isArray(body.sales) ? body.sales.slice(0, 1000) : null;
+  if (!sales) throw bad('الحقل sales مطلوب (مصفوفة)');
+  const find = productFinder(); const groups = [], errors = [];
+  sales.forEach((s, i) => {
+    const date = s.date ? parseDate(s.date) : today();
+    if (!date) return errors.push({ index: i, error: 'تاريخ غير صحيح' });
+    const items = [];
+    for (const it of Array.isArray(s.items) ? s.items : []) {
+      const product = find(it.sku ?? it.product), qty = num(it.qty, 0), price = it.price == null || it.price === '' ? null : num(it.price, -1);
+      if (!product) { errors.push({ index: i, error: `منتج غير معروف: ${it.sku ?? it.product}` }); continue; }
+      if (qty <= 0 || (price !== null && price < 0)) { errors.push({ index: i, error: 'كمية أو سعر غير صحيح' }); continue; }
+      items.push({ product, qty, price });
+    }
+    if (items.length) groups.push({ ref: s.ref ? 'ext:' + String(s.ref).slice(0, 80) : null, date, customer_name: str(s.customer, 100), items });
+  });
+  const r = recordSales(groups, { updateStock: body.update_stock === true, channel: 'api' });
+  return { created: r.created, skipped_duplicates: r.skipped, errors };
+});
+route('POST', '/api/integration/stock', null, ({ body, headers, ip }) => {
+  checkApiKey(headers, ip);
+  const find = productFinder(); const errors = []; let updated = 0;
+  tx(() => (Array.isArray(body.items) ? body.items.slice(0, 2000) : []).forEach((it, i) => {
+    const p = find(it.sku ?? it.product), stock = num(it.stock, -1);
+    if (!p || stock < 0) return errors.push({ index: i, error: !p ? `منتج غير معروف: ${it.sku ?? it.product}` : 'مخزون غير صحيح' });
+    run('UPDATE products SET stock=? WHERE id=?', stock, p.id); updated++;
+  }));
+  return { updated, errors };
+});
 
 // المشتريات
 route('GET', '/api/purchases', ['admin', 'manager', 'accountant'], () => all(`SELECT po.*, s.name supplier,
@@ -330,12 +462,12 @@ export const server = http.createServer(async (req, res) => {
         if (!r.x.roles.includes(user.role)) throw new HttpError(403, 'لا تملك صلاحية');
       }
       const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
-      const out = await r.x.handler({ body, params: r.m.groups || {}, query: url.searchParams, user, ip: req.socket.remoteAddress });
+      const out = await r.x.handler({ body, params: r.m.groups || {}, query: url.searchParams, user, ip: req.socket.remoteAddress, headers: req.headers });
       return sendJson(res, 200, out);
     }
     // ملفات ثابتة
     let p = decodeURIComponent(url.pathname);
-    if (p === '/') p = '/index.html'; else if (p === '/admin') p = '/admin.html';
+    if (p === '/') p = '/index.html'; else if (p === '/admin') p = '/admin.html'; else if (p === '/offers') p = '/offers.html';
     const file = path.join(PUB, path.normalize(p));
     if (!file.startsWith(PUB + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'غير موجود', { 'content-type': 'text/plain; charset=utf-8' });
     send(res, 200, fs.readFileSync(file), { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });

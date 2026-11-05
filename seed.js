@@ -49,7 +49,7 @@ tx(() => {
   for (let d = 90; d >= 1; d--) {
     const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
     for (let k = 0; k < 4; k++) {
-      const o = Number(run("INSERT INTO orders(customer_id,channel,status,created_at) VALUES(?,'pos','completed',?)", custs[Math.floor(rnd() * custs.length)], `${day} ${10 + k * 3}:00:00`).lastInsertRowid);
+      const o = Number(run("INSERT INTO orders(customer_id,channel,status,created_at,stock_applied) VALUES(?,'import','completed',?,0)", custs[Math.floor(rnd() * custs.length)], `${day} ${10 + k * 3}:00:00`).lastInsertRowid);
       let sub = 0;
       for (const [id, pr, co, rate] of ids.filter(() => rnd() < 0.35)) {
         const qty = Math.max(0.5, Math.round(rate * (0.5 + rnd()) * 2) / 2);

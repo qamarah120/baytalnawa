@@ -7,15 +7,19 @@ const ROLE = { admin: 'مدير النظام', manager: 'مدير', sales: 'مب
 const badge = (s) => `<span class="badge b-${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 let token = sessionStorage.getItem('t'), me = null;
 
+let navSeq = 0;
+class Cancel extends Error {}
 async function api(path, method = 'GET', body) {
+  const seq = navSeq;
   const r = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const d = await r.json().catch(() => ({}));
+  if (seq !== navSeq && method === 'GET') throw new Cancel('');
   if (r.status === 401 && token) { logout(); }
   if (!r.ok) throw new Error(d.error || 'خطأ');
   return d;
 }
 function toast(m) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = m; document.body.append(t); setTimeout(() => t.remove(), 3000); }
-const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message); } };
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (!(e instanceof Cancel)) toast(e.message); } };
 function logout() { sessionStorage.removeItem('t'); token = null; me = null; showLogin(); }
 
 // ---------- نافذة نموذج ----------
@@ -79,14 +83,14 @@ function crud(key, title, cols, fieldsFn, can, chipKey) {
 const supplierOpts = async () => [['', '— بدون —'], ...(await api('/suppliers').catch(() => [])).map((s) => [s.id, s.name])];
 const WR = (...r) => r.includes(me.role);
 crud('products', 'المنتجات والعروض', [
-  { l: 'المنتج', k: 'name' }, { l: 'الفئة', k: 'category' }, { l: 'الوحدة', k: 'unit' },
+  { l: 'المنتج', k: 'name' }, { l: 'الرمز', f: (r) => r.sku || '—' }, { l: 'الفئة', k: 'category' }, { l: 'الوحدة', k: 'unit' },
   { l: 'السعر', f: (r) => money(r.price) }, { l: 'التكلفة', f: (r) => money(r.cost) },
   { l: 'الهامش', f: (r) => (r.price ? Math.round(((r.price - r.cost) / r.price) * 100) + '%' : '-') },
   { l: 'المخزون', html: (r) => `<span class="${r.stock <= r.reorder_level ? 'down' : ''}">${esc(r.stock)}</span>` },
   { l: 'العرض', html: (r) => (r.offer_percent ? `<span class="badge b-soon">${r.offer_percent}%${r.offer_ends ? ' حتى ' + esc(r.offer_ends) : ''}</span>` : '') },
   { l: 'ظاهر', f: (r) => (r.active ? 'نعم' : 'لا') },
 ], async () => [
-  { k: 'name', l: 'اسم المنتج', req: 1 }, { k: 'category', l: 'الفئة', t: 'select', opts: CATS.map((c) => [c, c]) },
+  { k: 'name', l: 'اسم المنتج', req: 1 }, { k: 'sku', l: 'رمز المنتج SKU (للربط والاستيراد، اختياري)' }, { k: 'category', l: 'الفئة', t: 'select', opts: CATS.map((c) => [c, c]) },
   { k: 'unit', l: 'الوحدة (كجم/جرام/حبة)' }, { k: 'price', l: 'سعر البيع (شامل الضريبة)', t: 'number' }, { k: 'cost', l: 'تكلفة الشراء', t: 'number' },
   { k: 'stock', l: 'المخزون الحالي', t: 'number' }, { k: 'reorder_level', l: 'حد إعادة الطلب', t: 'number' }, { k: 'lead_days', l: 'مدة التوريد (أيام)', t: 'number' },
   { k: 'supplier_id', l: 'المورد', t: 'select', opts: await supplierOpts() }, { k: 'offer_percent', l: 'خصم العرض %', t: 'number' }, { k: 'offer_ends', l: 'نهاية العرض', t: 'date' },
@@ -154,15 +158,15 @@ pages.dashboard = async (root) => {
   const kpi = (l, v, sub, go) => `<div class="card kpi ${go ? 'click' : ''}" ${go ? `data-go="${go}"` : ''}><div class="l">${l}</div><div class="v">${v}</div><div class="l">${sub || '&nbsp;'}</div></div>`;
   function draw() {
     const s = st.d, p = s.prev, per = { 7: 'أسبوع', 30: '30 يوماً', 90: '90 يوماً', 365: 'سنة' };
-    const chan = { store: 'المتجر', pos: 'نقطة بيع' };
-    root.innerHTML = `<div class="bar"><h1>لوحة المؤشرات</h1><span class="seg">${[7, 30, 90, 365].map((d) => `<button data-days="${d}" class="${d === s.days ? 'on' : ''}">${per[d]}</button>`).join('')}<button id="csv" title="تصدير البيانات اليومية">⬇ CSV</button></span></div>
+    const chan = CHAN;
+    root.innerHTML = `<div class="bar"><h1>مركز المتابعة</h1><span class="seg">${[7, 30, 90, 365].map((d) => `<button data-days="${d}" class="${d === s.days ? 'on' : ''}">${per[d]}</button>`).join('')}<button id="csv" title="تصدير البيانات اليومية">⬇ CSV</button></span></div>
     <div class="grid g4">
       ${kpi('الإيراد (شامل الضريبة)', money(s.revenue), delta(s.revenue, p.revenue) + ' عن الفترة السابقة')}
       ${kpi('الربح الإجمالي', `<span class="up">${money(s.gross_profit)}</span>`, delta(s.gross_profit, p.gross_profit) + ' عن الفترة السابقة')}
       ${kpi('هامش الربح', s.margin + '%', delta(s.margin, p.margin, 1))}
-      ${kpi('الطلبات', s.orders, delta(s.orders, p.orders) + ' · متوسط ' + money(s.avg_order))}
+      ${kpi('عمليات البيع', s.orders, delta(s.orders, p.orders) + ' · متوسط ' + money(s.avg_order))}
       ${kpi('ضريبة القيمة المضافة', money(s.vat), delta(s.vat, p.vat))}
-      ${kpi('طلبات بانتظار التأكيد', `<span class="${s.pending_orders ? 'down' : ''}">${s.pending_orders}</span>`, 'اضغط للمراجعة ←', 'orders')}
+      ${kpi('عروض سارية', s.active_offers, 'اضغط للإدارة ←', 'offers')}
       ${kpi('أصناف تحت حد الطلب', `<span class="${s.low_stock ? 'down' : ''}">${s.low_stock}</span>`, 'اضغط لاقتراحات الشراء ←', 'analyst')}
       ${kpi('قيمة المخزون', money(s.inventory_value), `${s.products} منتج · ${s.customers} عميل`, 'products')}</div>
     <div class="card" style="margin-top:1rem"><div class="bar" style="margin:0 0 .5rem"><b>الاتجاه اليومي</b><span class="seg">${Object.entries(METRICS).map(([k, m]) => `<button data-m="${k}" class="${k === st.metric ? 'on' : ''}">${m[0]}</button>`).join('')}</span></div>${lineChart(s.daily, st.metric)}</div>
@@ -172,7 +176,7 @@ pages.dashboard = async (root) => {
       <div class="card"><b>الأكثر مبيعاً${st.cat ? ' في ' + esc(st.cat) + ' <button class="btn sm ghost" id="clr">✕ إلغاء</button>' : ''}</b>
         ${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'المبيعات', f: (r) => money(r.v) }, { l: 'الربح', html: (r) => `<span class="up">${money(r.profit)}</span>` }], s.top_products)}</div>
       <div class="card bars"><b>أيام الأسبوع الأقوى</b>${hbars(WD.map((n, i) => ({ l: n, v: s.by_weekday.find((w) => w.w === i)?.v || 0 })), money)}
-        <hr><b>القنوات</b>${hbars(s.by_channel.map((c) => ({ l: chan[c.c] || c.c, v: c.v })), money, 'var(--brown)')}</div>
+        <hr><b>مصدر التسجيل</b>${hbars(s.by_channel.map((c) => ({ l: chan[c.c] || c.c, v: c.v })), money, 'var(--brown)')}</div>
       <div class="card"><b>أفضل العملاء</b>${table([{ l: 'العميل', k: 'name' }, { l: 'الطلبات', k: 'orders' }, { l: 'المشتريات', f: (r) => money(r.v) }], s.top_customers)}
         <hr><b>⚠ مخزون منخفض</b>${s.low_stock_items.map((i) => `<div class="ins warn click" data-go="products">${esc(i.name)}: ${esc(i.stock)} ${esc(i.unit)} (الحد ${esc(i.reorder_level)})</div>`).join('') || '<p class="l">كل الأصناف بمستوى جيد ✅</p>'}</div>
     </div>`;
@@ -194,38 +198,89 @@ pages.dashboard = async (root) => {
   await load();
 };
 
-// نقطة بيع / طلب جديد
+// ---------- تسجيل المبيعات (متابعة، بلا فواتير) ----------
+const CHAN = { manual: 'تسجيل يدوي', import: 'استيراد ملف', api: 'ربط البرنامج', pos: 'قديم', store: 'قديم' };
 pages.sale = async (root) => {
   const [prods, custs] = await Promise.all([api('/products'), api('/customers')]);
-  const items = new Map(); const eff = (p) => (p.offer_percent > 0 && (!p.offer_ends || p.offer_ends >= new Date().toISOString().slice(0, 10)) ? p.price * (1 - p.offer_percent / 100) : p.price);
+  const act = prods.filter((p) => p.active);
+  const eff = (p) => (p.offer_percent > 0 && (!p.offer_ends || p.offer_ends >= new Date().toISOString().slice(0, 10)) ? Math.round(p.price * (1 - p.offer_percent / 100) * 100) / 100 : p.price);
+  const lines = [{ id: '', qty: '', price: '' }];
   const draw = () => {
-    const lines = [...items].map(([id, q]) => ({ p: prods.find((x) => x.id === id), q })); const total = lines.reduce((s, l) => s + eff(l.p) * l.q, 0);
-    root.innerHTML = `<div class="bar"><h1>بيع جديد</h1></div><div class="grid g2"><div class="card"><label>أضف منتجاً</label><select id="pp"><option value="">اختر...</option>${prods.filter((p) => p.active).map((p) => `<option value="${p.id}">${esc(p.name)} — ${money(eff(p))} (متوفر ${p.stock})</option>`).join('')}</select>
-    <label>العميل</label><select id="cu"><option value="">عميل نقدي</option>${custs.map((c) => `<option value="${c.id}">${esc(c.name)} ${esc(c.phone || '')}</option>`).join('')}</select>
-    <label>خصم إضافي (ر.س)</label><input id="di" type="number" min="0" value="0"></div>
-    <div class="card">${lines.map((l) => `<div style="display:flex;gap:.5rem;align-items:center;margin:.3rem 0"><span style="flex:1">${esc(l.p.name)}</span><input type="number" step="0.5" min="0" value="${l.q}" data-q="${l.p.id}" style="width:80px"><b>${money(eff(l.p) * l.q)}</b></div>`).join('') || '<p>لا أصناف</p>'}
-    <p><b>الإجمالي قبل الخصم: ${money(total)} ر.س</b></p><button class="btn" id="done" ${lines.length ? '' : 'disabled'}>إتمام البيع</button></div></div>`;
-    $('#pp').onchange = (e) => { const id = Number(e.target.value); if (id) { items.set(id, (items.get(id) || 0) + 1); const c = $('#cu').value, d = $('#di').value; draw(); $('#cu').value = c; $('#di').value = d; } };
-    document.querySelectorAll('[data-q]').forEach((i) => (i.onchange = () => { Number(i.value) > 0 ? items.set(Number(i.dataset.q), Number(i.value)) : items.delete(Number(i.dataset.q)); const c = $('#cu').value, d = $('#di').value; draw(); $('#cu').value = c; $('#di').value = d; }));
-    $('#done').onclick = guard(async () => { const r = await api('/orders', 'POST', { items: lines.map((l) => ({ product_id: l.p.id, qty: l.q })), customer_id: $('#cu').value || null, discount: $('#di').value, status: 'completed' }); toast('تم البيع، فاتورة رقم ' + r.id); items.clear(); nav('orders'); });
+    const total = lines.reduce((s, l) => { const p = act.find((x) => x.id == l.id); return s + (p && l.qty > 0 ? (l.price !== '' ? +l.price : eff(p)) * l.qty : 0); }, 0);
+    root.innerHTML = `<div class="bar"><h1>تسجيل مبيعات</h1></div><div class="card"><div class="grid g2"><div><label>التاريخ</label><input type="date" id="dt" value="${new Date().toISOString().slice(0, 10)}"></div>
+    <div><label>العميل (اختياري)</label><select id="cu"><option value="">—</option>${custs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div></div>
+    <div class="tbl-wrap" style="margin-top:.8rem"><table><thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة (شامل الضريبة)</th><th>المبلغ</th><th></th></tr></thead><tbody>
+    ${lines.map((l, i) => { const p = act.find((x) => x.id == l.id); return `<tr><td><select data-i="${i}" data-k="id" style="min-width:200px"><option value="">اختر منتجاً...</option>${act.map((x) => `<option value="${x.id}" ${x.id == l.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></td>
+    <td><input type="number" min="0" step="any" data-i="${i}" data-k="qty" value="${l.qty}" style="width:90px"> ${p ? esc(p.unit) : ''}</td>
+    <td><input type="number" min="0" step="any" data-i="${i}" data-k="price" value="${l.price}" placeholder="${p ? eff(p) : ''}" style="width:110px"></td>
+    <td id="am${i}">${p && l.qty > 0 ? money((l.price !== '' ? +l.price : eff(p)) * l.qty) : '—'}</td><td>${lines.length > 1 ? `<button class="btn sm danger" data-rm="${i}">✕</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
+    <p><button class="btn ghost sm" id="addl">+ صنف</button></p><p><b>الإجمالي: <span id="tt">${money(total)}</span> ر.س</b> <small class="l">· يُخصم من المخزون تلقائياً</small></p><button class="btn" id="done">حفظ التسجيل</button></div>`;
   };
   draw();
+  const refresh = () => { let tot = 0; lines.forEach((l, i) => { const p = act.find((x) => x.id == l.id), v = p && l.qty > 0 ? (l.price !== '' ? +l.price : eff(p)) * l.qty : 0; tot += v; const c = $('#am' + i); if (c) c.textContent = v ? money(v) : '—'; }); $('#tt').textContent = money(tot); };
+  root.oninput = (e) => { const t = e.target; if (t.dataset.k === 'qty' || t.dataset.k === 'price') { lines[+t.dataset.i][t.dataset.k] = t.value; refresh(); } };
+  root.onchange = (e) => { const t = e.target; if (t.dataset.k === 'id') { lines[+t.dataset.i].id = t.value; lines[+t.dataset.i].price = ''; const dt = $('#dt').value, cu = $('#cu').value; draw(); $('#dt').value = dt; $('#cu').value = cu; } };
+  root.onclick = guard(async (e) => {
+    const t = e.target; const keep = () => { const dt = $('#dt').value, cu = $('#cu').value; draw(); $('#dt').value = dt; $('#cu').value = cu; };
+    if (t.id === 'addl') { lines.push({ id: '', qty: '', price: '' }); keep(); }
+    if (t.dataset.rm !== undefined) { lines.splice(+t.dataset.rm, 1); keep(); }
+    if (t.id === 'done') {
+      const items = lines.filter((l) => l.id && l.qty > 0).map((l) => ({ product_id: l.id, qty: l.qty, price: l.price }));
+      await api('/sales', 'POST', { date: $('#dt').value, customer_id: $('#cu').value || null, items });
+      toast('تم تسجيل البيع'); nav('orders');
+    }
+  });
 };
 pages.orders = async (root) => {
-  const all0 = await api('/orders'); const flt = pages._of || (pages._of = { s: '', q: '' });
-  const rows = all0.filter((r) => (!flt.s || r.status === flt.s) && (!flt.q || JSON.stringify(Object.values(r)).includes(flt.q)));
-  root.innerHTML = `<div class="bar"><h1>الطلبات <small class="l">(${rows.length})</small></h1><span><input id="oq" placeholder="بحث..." value="${esc(flt.q)}" style="width:160px"> <button class="btn" id="n">+ بيع جديد</button></span></div>
-  <div class="tabs">${[['', 'الكل'], ['pending', 'قيد الانتظار (' + all0.filter((r) => r.status === 'pending').length + ')'], ['completed', 'مكتمل'], ['cancelled', 'ملغي']].map(([k, l]) => `<button data-fs="${k}" class="${flt.s === k ? 'on' : ''}">${l}</button>`).join('')}</div>${table([
-    { l: '#', k: 'id' }, { l: 'التاريخ', f: (r) => r.created_at.slice(0, 16) }, { l: 'العميل', k: 'cname' }, 
-    { l: 'الأصناف', k: 'items' }, { l: 'الإجمالي', f: (r) => money(r.total) }, { l: 'الحالة', html: (r) => badge(r.status) }],
-    rows, (r) => `<button class="btn sm ghost" data-v="${r.id}">عرض</button>${r.status === 'pending' ? ` <button class="btn sm" data-s="completed" data-id="${r.id}">تأكيد</button>` : ''}${r.status !== 'cancelled' ? ` <button class="btn sm danger" data-s="cancelled" data-id="${r.id}">إلغاء</button>` : ''}`)}`;
-  $('#n').onclick = () => nav('sale');
+  const all0 = await api('/orders'); const flt = pages._of || (pages._of = { c: '', q: '' });
+  const rows = all0.filter((r) => (!flt.c || r.channel === flt.c) && (!flt.q || JSON.stringify(Object.values(r)).includes(flt.q)));
+  const chans = [...new Set(all0.map((r) => r.channel))];
+  root.innerHTML = `<div class="bar"><h1>سجل المبيعات <small class="l">(${rows.length})</small></h1><span><input id="oq" placeholder="بحث..." value="${esc(flt.q)}" style="width:160px"> <button class="btn" id="n">+ تسجيل بيع</button> <button class="btn ghost" id="im">استيراد</button></span></div>
+  <div class="tabs"><button data-fc="" class="${flt.c ? '' : 'on'}">الكل</button>${chans.map((c) => `<button data-fc="${esc(c)}" class="${flt.c === c ? 'on' : ''}">${esc(CHAN[c] || c)}</button>`).join('')}</div>
+  ${table([{ l: 'التاريخ', f: (r) => r.created_at.slice(0, 10) }, { l: 'العميل', f: (r) => r.cname || '—' }, { l: 'المصدر', f: (r) => CHAN[r.channel] || r.channel }, { l: 'رقم المرجع', f: (r) => (r.external_ref || '').replace(/^ext:/, '').replace(/^row:.*/, '') || '—' }, { l: 'الأصناف', k: 'items' }, { l: 'المبلغ', f: (r) => money(r.total) }],
+    rows, (r) => `<button class="btn sm ghost" data-v="${r.id}">عرض</button>${WR('admin', 'manager') ? ` <button class="btn sm danger" data-del="${r.id}">حذف</button>` : ''}`)}`;
+  $('#n').onclick = () => nav('sale'); $('#im').onclick = () => nav('import');
   $('#oq').onchange = (e) => { flt.q = e.target.value; pages.orders(root); };
   root.onclick = guard(async (e) => {
     const t = e.target;
-    if (t.dataset.fs !== undefined) { flt.s = t.dataset.fs; return pages.orders(root); }
-    if (t.dataset.s) { if (t.dataset.s === 'cancelled' && !confirm('إلغاء الطلب؟')) return; await api(`/orders/${t.dataset.id}/status`, 'POST', { status: t.dataset.s }); toast('تم'); pages.orders(root); }
-    if (t.dataset.v) { const o = await api('/orders/' + t.dataset.v); $('#modal').innerHTML = `<div class="modal-bg"><div class="modal"><h3>طلب #${o.id}</h3><p>${esc(o.customer_name || '')} ${esc(o.customer_phone || '')}</p>${o.notes ? `<p>ملاحظات: ${esc(o.notes)}</p>` : ''}${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'السعر', f: (r) => money(r.price) }], o.items)}<p>الخصم: ${money(o.discount)} | الضريبة: ${money(o.vat)} | <b>الإجمالي: ${money(o.total)}</b></p><button class="btn ghost" id="mc">إغلاق</button></div></div>`; $('#mc').onclick = closeModal; }
+    if (t.dataset.fc !== undefined) { flt.c = t.dataset.fc; return pages.orders(root); }
+    if (t.dataset.del && confirm('حذف هذا السجل؟ سيُعاد ما خُصم من المخزون إن كان قد خُصم.')) { await api('/orders/' + t.dataset.del, 'DELETE'); toast('تم الحذف'); pages.orders(root); }
+    if (t.dataset.v) { const o = await api('/orders/' + t.dataset.v); $('#modal').innerHTML = `<div class="modal-bg"><div class="modal"><h3>عملية بيع ${esc(o.created_at.slice(0, 10))}</h3><p>${esc(o.customer_name || '')}</p>${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'السعر', f: (r) => money(r.price) }, { l: 'المبلغ', f: (r) => money(r.price * r.qty) }], o.items)}<p><b>الإجمالي: ${money(o.total)}</b> (ضريبة ${money(o.vat)})</p><button class="btn ghost" id="mc">إغلاق</button></div></div>`; $('#mc').onclick = closeModal; }
+  });
+};
+pages.import = async (root) => {
+  root.innerHTML = `<div class="bar"><h1>استيراد المبيعات من Excel / CSV</h1></div>
+  <div class="card"><p>من Excel: احفظ الملف بصيغة <b>CSV UTF-8</b> وارفعه، أو <b>انسخ الخلايا (مع صف العناوين)</b> والصقها في المربع.</p>
+  <p class="l">الأعمدة المطلوبة: <b>التاريخ، المنتج، الكمية</b> · اختيارية: <b>السعر</b> (شامل الضريبة)، <b>رقم العملية</b>، <b>العميل</b>. يمكن أن يكون المنتج اسمه أو رمزه (SKU) كما هو في النظام. إعادة رفع نفس الملف لا تكرر المبيعات.</p>
+  <p><button class="btn ghost sm" id="tpl">⬇ تنزيل قالب</button> <input type="file" id="fl" accept=".csv,.txt,.tsv" style="width:auto"></p>
+  <textarea id="tx" rows="9" placeholder="التاريخ&#9;المنتج&#9;الكمية&#9;السعر&#10;2026-11-01&#9;تمر سكري القصيم&#9;3&#9;45"></textarea>
+  <p><label style="display:inline"><input type="checkbox" id="us" style="width:auto"> خصم الكميات من المخزون <small class="l">(فعّله فقط للمبيعات الجديدة غير المحسوبة في المخزون)</small></label></p>
+  <p><button class="btn gold" id="pv">فحص الملف</button> <button class="btn" id="go" disabled>استيراد</button></p><div id="rs"></div></div>`;
+  $('#tpl').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿التاريخ,المنتج,الكمية,السعر,رقم العملية,العميل\n' + new Date().toISOString().slice(0, 10) + ',تمر سكري القصيم,3,45,1001,\n'], { type: 'text/csv;charset=utf-8' })); a.download = 'sales-template.csv'; a.click(); URL.revokeObjectURL(a.href); };
+  $('#fl').onchange = (e) => { const f = e.target.files[0]; if (!f) return; if (f.size > 5e6) return toast('الملف كبير (الحد 5MB)'); const r = new FileReader(); r.onload = () => { $('#tx').value = r.result; $('#go').disabled = true; }; r.readAsText(f, 'utf-8'); };
+  $('#tx').oninput = () => ($('#go').disabled = true);
+  const show = (d, done) => { $('#rs').innerHTML = `<div class="ins ${d.error_count ? 'warn' : 'good'}">${done ? `تم: أُضيفت <b>${d.created}</b> عملية بيع${d.skipped ? `، وتُخطّيت <b>${d.skipped}</b> مكررة` : ''}.` : `الفحص: <b>${d.valid_rows}</b> صف صالح من ${d.total_rows} (${d.orders} عملية).`}${d.error_count ? ` · أخطاء: <b>${d.error_count}</b>` : ''}</div>` + (d.errors.length ? table([{ l: 'السطر', k: 'line' }, { l: 'المشكلة', k: 'error' }], d.errors) : ''); };
+  $('#pv').onclick = guard(async () => { const d = await api('/sales/import', 'POST', { text: $('#tx').value, dry_run: true }); show(d, false); $('#go').disabled = !d.valid_rows; });
+  $('#go').onclick = guard(async () => { if (!confirm('تأكيد الاستيراد؟')) return; $('#go').disabled = true; const d = await api('/sales/import', 'POST', { text: $('#tx').value, update_stock: $('#us').checked }); show(d, true); toast('تم الاستيراد'); });
+};
+
+// ---------- إدارة العروض ----------
+pages.offers = async (root) => {
+  const prods = await api('/products'); const t0 = new Date().toISOString().slice(0, 10);
+  const withOffer = prods.filter((p) => p.offer_percent > 0);
+  const state = (p) => (p.offer_ends && p.offer_ends < t0 ? ['expired', 'منتهي'] : ['ok', 'ساري']);
+  const fields = [{ k: 'product_id', l: 'المنتج', t: 'select', opts: prods.filter((p) => p.active).map((p) => [p.id, `${p.name} (${money(p.price)})`]) }, { k: 'offer_percent', l: 'نسبة الخصم %', t: 'number', req: 1 }, { k: 'offer_ends', l: 'تاريخ انتهاء العرض', t: 'date' }];
+  root.innerHTML = `<div class="bar"><h1>العروض <small class="l">(${withOffer.filter((p) => state(p)[0] === 'ok').length} ساري)</small></h1><span><a class="btn ghost" href="/offers" target="_blank">معاينة الصفحة العامة ↗</a> <button class="btn" id="add">+ عرض جديد</button></span></div>
+  <p class="l">العروض السارية تظهر في صفحة <b>/offers</b> العامة للعملاء. المنتج الذي نفد مخزونه لا يظهر فيها.</p>
+  ${table([{ l: 'المنتج', k: 'name' }, { l: 'الفئة', k: 'category' }, { l: 'السعر قبل', f: (p) => money(p.price) }, { l: 'الخصم', f: (p) => p.offer_percent + '%' }, { l: 'السعر بعد', f: (p) => money(p.price * (1 - p.offer_percent / 100)) },
+    { l: 'الهامش بعد الخصم', html: (p) => { const a = p.price * (1 - p.offer_percent / 100), m = a ? ((a - p.cost) / a) * 100 : 0; return `<span class="${m < 5 ? 'down' : ''}">${m.toFixed(0)}%${m < 5 ? ' ⚠' : ''}</span>`; } },
+    { l: 'ينتهي', f: (p) => p.offer_ends || 'مفتوح' }, { l: 'الحالة', html: (p) => badge(state(p)[0] === 'ok' ? 'completed' : 'cancelled').replace(/>[^<]*</, `>${state(p)[1]}<`) }],
+    withOffer, (p) => `<button class="btn sm ghost" data-e="${p.id}">تعديل</button> <button class="btn sm danger" data-end="${p.id}">إنهاء</button>`)}`;
+  root.onclick = guard(async (e) => {
+    const t = e.target;
+    if (t.id === 'add') formModal('عرض جديد', fields, { offer_percent: 10 }, async (o) => { await api('/products/' + o.product_id, 'PUT', { offer_percent: o.offer_percent, offer_ends: o.offer_ends || null }); toast('تم إنشاء العرض'); pages.offers(root); });
+    if (t.dataset.e) { const p = prods.find((x) => x.id == t.dataset.e); formModal('تعديل العرض: ' + p.name, fields.slice(1), p, async (o) => { await api('/products/' + p.id, 'PUT', { offer_percent: o.offer_percent, offer_ends: o.offer_ends || null }); toast('تم'); pages.offers(root); }); }
+    if (t.dataset.end && confirm('إنهاء العرض؟')) { await api('/products/' + t.dataset.end, 'PUT', { offer_percent: 0, offer_ends: null }); toast('تم إنهاء العرض'); pages.offers(root); }
   });
 };
 
@@ -306,7 +361,7 @@ pages.market = async (root) => {
     $('#ind').innerHTML = (d.error ? `<p class="down">${esc(d.error)}</p>` : '') + (d.insights || []).map((i) => `<div class="ins ${esc(i.level)}">${esc(i.text)}</div>`).join('') +
       Object.entries(groups).map(([g, its]) => `<h3>${esc(g)}</h3><div class="grid g4">${its.map((i) => `<div class="card kpi"><div class="l">${esc(i.name)}</div>${i.error ? '<div class="l">غير متاح</div>' : `<div class="v">${Number(i.price).toLocaleString('en-US', { maximumFractionDigits: i.digits || 2 })}</div><div class="${i.change >= 0 ? 'up' : 'down'}">${i.change == null ? '' : (i.change >= 0 ? '▲ ' : '▼ ') + Math.abs(i.change).toFixed(2) + '%'}</div>${spark(i.series)}`}</div>`).join('')}</div>`).join('') +
       '<small class="l">المصدر: Yahoo Finance (غير رسمي) وقد يتأخر. للاطلاع فقط وليست توصية استثمارية.</small>';
-  }).catch((e) => ($('#ind').textContent = e.message));
+  }).catch((e) => { if ($('#ind') && !(e instanceof Cancel)) $('#ind').textContent = e.message; });
   let items = [], cat = 'saudi';
   const showNews = () => { const q = $('#nq').value.trim(); const f = items.filter((n) => !q || n.title.includes(q));
     $('#news').innerHTML = f.map((n) => { const tags = Object.entries(KW).filter(([, re]) => re.test(n.title)).map(([k]) => `<span class="badge b-ordered">${esc(k)}</span>`).join(' ');
@@ -334,24 +389,36 @@ pages.users = async (root) => {
 pages.settings = async (root) => {
   const s = await api('/settings');
   root.innerHTML = `<div class="bar"><h1>الإعدادات</h1></div><div class="grid g2"><form class="card" id="f"><b>بيانات المؤسسة (تظهر في صفحة الهبوط)</b><label>اسم المؤسسة</label><input name="store_name" value="${esc(s.store_name)}"><label>واتساب (بدون +، مثال 966500000000)</label><input name="whatsapp" inputmode="tel" value="${esc(s.whatsapp)}"><label>رقم الاتصال</label><input name="phone" inputmode="tel" value="${esc(s.phone)}"><label>المدينة</label><input name="city" value="${esc(s.city)}"><label>نسبة ضريبة القيمة المضافة %</label><input name="vat_rate" type="number" value="${esc(s.vat_rate)}"><p><button class="btn">حفظ</button></p></form>
-  <form class="card" id="p"><b>تغيير كلمة مروري</b><label>الحالية</label><input type="password" name="old"><label>الجديدة (8+)</label><input type="password" name="new"><p><button class="btn">تغيير</button></p></form></div>`;
+  <form class="card" id="p"><b>تغيير كلمة مروري</b><label>الحالية</label><input type="password" name="old"><label>الجديدة (8+)</label><input type="password" name="new"><p><button class="btn">تغيير</button></p></form></div>
+  <div class="card" style="margin-top:1rem" id="ik"></div>`;
+  const drawKey = async () => {
+    const st = await api('/integration/status'); const o = location.origin;
+    const ex = JSON.stringify({ update_stock: false, sales: [{ ref: '1001', date: '2026-11-01', customer: 'محمد', items: [{ sku: 'DATE-01', qty: 2, price: 45 }] }] }, null, 2);
+    $('#ik').innerHTML = `<b>الربط مع برنامج المبيعات (API)</b><p class="l">يرسل برنامج المبيعات عملياته إلى النظام تلقائياً. الحالة: ${st.enabled ? '<span class="up">مفعّل</span>' : 'غير مفعّل'}. اطلب من مبرمج برنامج المبيعات استخدام التعليمات أدناه.</p>
+    <button class="btn" id="gk">${st.enabled ? 'تجديد المفتاح (يبطل القديم)' : 'إنشاء مفتاح الربط'}</button> ${st.enabled ? '<button class="btn danger" id="dk">تعطيل الربط</button>' : ''}
+    <details style="margin-top:.8rem"><summary>تعليمات الربط</summary><p class="l">أرسل الترويسة <code>X-API-Key</code> مع كل طلب. المنتج يُطابق برمز SKU أو باسمه كما في النظام. تكرار نفس <code>ref</code> يُتجاهل فلا تتكرر المبيعات. الخصم من المخزون معطّل افتراضياً (<code>update_stock</code>) لأن برنامجك غالباً يدير المخزون، ويمكنك مزامنة المخزون من نقطة المخزون.</p>
+    <pre dir="ltr" style="background:#2b2118;color:#f4ebdd;padding:.8rem;border-radius:8px;overflow:auto;font-size:.8rem">POST ${esc(o)}/api/integration/sales\nX-API-Key: bn_xxxxxxxx\nContent-Type: application/json\n\n${esc(ex)}\n\nPOST ${esc(o)}/api/integration/stock\n{ "items": [ { "sku": "DATE-01", "stock": 120 } ] }</pre></details>`;
+    $('#gk').onclick = guard(async () => { if (st.enabled && !confirm('سيتوقف المفتاح القديم عن العمل. متابعة؟')) return; const r = await api('/integration/key', 'POST'); $('#modal').innerHTML = `<div class="modal-bg"><div class="modal"><h3>مفتاح الربط</h3><p class="down">انسخه الآن، لن يظهر مرة أخرى.</p><input readonly dir="ltr" value="${esc(r.key)}" id="kv"><p><button class="btn" id="cp">نسخ</button> <button class="btn ghost" id="mc">إغلاق</button></p></div></div>`; $('#kv').select(); $('#cp').onclick = () => { navigator.clipboard?.writeText(r.key); toast('تم النسخ'); }; $('#mc').onclick = () => { closeModal(); drawKey(); }; });
+    const d = $('#dk'); if (d) d.onclick = guard(async () => { if (!confirm('تعطيل الربط؟')) return; await api('/integration/key', 'DELETE'); toast('تم التعطيل'); drawKey(); });
+  };
+  drawKey();
   $('#f').onsubmit = guard(async (e) => { e.preventDefault(); await api('/settings', 'PUT', Object.fromEntries(new FormData(e.target))); toast('تم الحفظ'); });
   $('#p').onsubmit = guard(async (e) => { e.preventDefault(); await api('/me/password', 'POST', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('تم التغيير'); });
 };
 
 // ---------- الهيكل ----------
 const NAV = [
-  ['dashboard', 'الرئيسية', ['admin', 'manager', 'accountant']], ['sale', 'بيع جديد', ['admin', 'manager', 'sales']], ['orders', 'الطلبات', ['admin', 'manager', 'sales', 'accountant']],
-  ['products', 'المنتجات والعروض', ['admin', 'manager', 'sales']], ['customers', 'العملاء', ['admin', 'manager', 'sales', 'accountant']], ['suppliers', 'الموردون', ['admin', 'manager', 'accountant']],
+  ['dashboard', 'مركز المتابعة', ['admin', 'manager', 'accountant']], ['sale', 'تسجيل مبيعات', ['admin', 'manager', 'sales']], ['orders', 'سجل المبيعات', ['admin', 'manager', 'sales', 'accountant']], ['import', 'استيراد مبيعات', ['admin', 'manager', 'sales']],
+  ['products', 'المنتجات والمخزون', ['admin', 'manager', 'sales']], ['offers', 'العروض', ['admin', 'manager']], ['customers', 'العملاء', ['admin', 'manager', 'sales', 'accountant']], ['suppliers', 'الموردون', ['admin', 'manager', 'accountant']],
   ['purchases', 'أوامر الشراء', ['admin', 'manager', 'accountant']], ['analyst', 'المحلل', ['admin', 'manager', 'accountant']], ['market', 'السوق والأخبار', ['admin', 'manager', 'accountant']],
-  ['employees', 'الموظفون', ['admin', 'manager']], ['users', 'المستخدمون', ['admin']], ['settings', 'الإعدادات', ['admin']],
+  ['employees', 'الموظفون', ['admin', 'manager']], ['users', 'المستخدمون', ['admin']], ['settings', 'الإعدادات والربط', ['admin']],
 ];
 let current = null;
 async function nav(p) {
-  current = p; location.hash = p;
+  navSeq++; current = p; location.hash = p;
   document.querySelectorAll('.side a[data-p]').forEach((a) => a.classList.toggle('on', a.dataset.p === p));
-  const root = $('#content'); root.innerHTML = 'جاري التحميل...'; root.onclick = null; root.onmouseover = null;
-  try { await pages[p](root); } catch (e) { root.innerHTML = `<p class="down">${esc(e.message)}</p>`; }
+  const root = $('#content'); root.innerHTML = 'جاري التحميل...'; root.onclick = null; root.onmouseover = null; root.oninput = null; root.onchange = null;
+  try { await pages[p](root); } catch (e) { if (!(e instanceof Cancel)) root.innerHTML = `<p class="down">${esc(e.message)}</p>`; }
 }
 function showApp() {
   const items = NAV.filter((n) => n[2].includes(me.role));
