@@ -92,17 +92,99 @@ crud('employees', 'الموظفون', [{ l: 'الاسم', k: 'name' }, { l: 'ا�
 crud('suppliers', 'الموردون', [{ l: 'المورد', k: 'name' }, { l: 'الجوال', k: 'phone' }, { l: 'الدولة', k: 'country' }, { l: 'ملاحظات', k: 'notes' }],
   async () => [{ k: 'name', l: 'الاسم', req: 1 }, { k: 'phone', l: 'الجوال' }, { k: 'country', l: 'الدولة' }, { k: 'notes', l: 'ملاحظات', t: 'textarea' }], true);
 
+// ---------- لوحة المؤشرات التفاعلية ----------
+const PAL = ['#c8923a', '#5a3a22', '#2e7d4f', '#2a5d9f', '#b3392f', '#8e5ea2', '#d4b483', '#3b9aa0'];
+const WD = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+const METRICS = { revenue: ['الإيراد (بدون ضريبة)', '#c8923a', true], profit: ['الربح الإجمالي', '#2e7d4f', true], orders: ['عدد الطلبات', '#2a5d9f', false] };
+const delta = (c, p, pp) => {
+  if (pp) { const d = c - p; return `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)} نقطة</span>`; }
+  if (!p) return c ? '<span class="up">جديد</span>' : '<span class="l">—</span>';
+  const d = ((c - p) / Math.abs(p)) * 100, a = Math.abs(d); return `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '▲' : '▼'} ${a > 999 ? '+999' : a.toFixed(1)}%</span>`;
+};
+function lineChart(daily, metric) {
+  const W = 760, H = 250, L = 24, R = 24, T = 14, B = 26, n = daily.length;
+  const vals = daily.map((d) => d[metric]), max = Math.max(1, ...vals) * 1.1;
+  const x = (i) => L + (n > 1 ? (i / (n - 1)) * (W - L - R) : (W - L - R) / 2), y = (v) => T + (1 - v / max) * (H - T - B);
+  const col = METRICS[metric][1], pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const step = Math.ceil(n / 8);
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${y(max * f / 1.1).toFixed(1)}" y2="${y(max * f / 1.1).toFixed(1)}" stroke="#e8dccb" stroke-dasharray="3 3"/>`).join('');
+  const ticks = daily.map((d, i) => (i % step === 0 || i === n - 1 ? `<text x="${x(i)}" y="${H - 8}" font-size="11" fill="#7b6b5c" text-anchor="middle">${d.d.slice(5)}</text>` : '')).join('');
+  return `<div class="chart" id="lc" dir="ltr"><svg viewBox="0 0 ${W} ${H}" width="100%">${grid}
+    <polygon points="${L},${H - B} ${pts.join(' ')} ${x(n - 1)},${H - B}" fill="${col}" opacity=".12"/>
+    <polyline points="${pts.join(' ')}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>
+    <line id="cl" y1="${T}" y2="${H - B}" stroke="#7b6b5c" stroke-dasharray="3 3" visibility="hidden"/><circle id="cd" r="5" fill="${col}" stroke="#fff" stroke-width="2" visibility="hidden"/>${ticks}</svg><div class="tip" id="tip" hidden></div></div>`;
+}
+function bindLine(daily, metric, W = 760, H = 250, L = 24, R = 24, T = 14, B = 26) {
+  const box = $('#lc'); if (!box) return; const n = daily.length, max = Math.max(1, ...daily.map((d) => d[metric])) * 1.1;
+  const svg = box.querySelector('svg'), tip = $('#tip'), cl = $('#cl'), cd = $('#cd');
+  box.onmousemove = box.ontouchmove = (e) => {
+    const r = svg.getBoundingClientRect(), cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((cx / r.width) * W - L) / (W - L - R) * (n - 1)))), d = daily[i];
+    const px = L + (n > 1 ? (i / (n - 1)) * (W - L - R) : 0), py = T + (1 - d[metric] / max) * (H - T - B);
+    cl.setAttribute('x1', px); cl.setAttribute('x2', px); cl.setAttribute('visibility', 'visible'); cd.setAttribute('cx', px); cd.setAttribute('cy', py); cd.setAttribute('visibility', 'visible');
+    tip.hidden = false; tip.style.left = Math.min(Math.max((px / W) * r.width, 70), r.width - 70) + 'px';
+    tip.innerHTML = `<b>${esc(d.d)}</b><br>إيراد: ${money(d.revenue)}<br>ربح: ${money(d.profit)}<br>طلبات: ${d.orders}`;
+  };
+  box.onmouseleave = () => { tip.hidden = true; cl.setAttribute('visibility', 'hidden'); cd.setAttribute('visibility', 'hidden'); };
+}
+function donut(cats, sel) {
+  const tot = cats.reduce((s, c) => s + c.v, 0) || 1; let a0 = -Math.PI / 2; const R = 80, r = 50, C = 100;
+  const arcs = cats.map((c, i) => {
+    const a1 = a0 + (c.v / tot) * Math.PI * 2 - 0.0001, big = a1 - a0 > Math.PI ? 1 : 0, o = sel && sel !== c.c ? 0.3 : 1;
+    const P = (a, rad) => `${(C + rad * Math.cos(a)).toFixed(2)} ${(C + rad * Math.sin(a)).toFixed(2)}`;
+    const p = `<path class="arc" data-c="${esc(c.c)}" d="M${P(a0, R)} A${R} ${R} 0 ${big} 1 ${P(a1, R)} L${P(a1, r)} A${r} ${r} 0 ${big} 0 ${P(a0, r)}Z" fill="${PAL[i % 8]}" opacity="${o}" style="cursor:pointer"><title>${esc(c.c)}: ${money(c.v)}</title></path>`;
+    a0 = a1 + 0.0001; return p;
+  }).join('');
+  return `<svg viewBox="0 0 200 200" width="190">${arcs}<text x="100" y="96" text-anchor="middle" font-size="11" fill="#7b6b5c" id="dl">${sel ? esc(sel) : 'الإجمالي'}</text><text x="100" y="114" text-anchor="middle" font-size="14" font-weight="700" fill="#5a3a22" id="dv">${money(sel ? (cats.find((c) => c.c === sel)?.v || 0) : tot)}</text></svg>`;
+}
+const hbars = (rows, fmt, color = 'var(--gold)') => { const m = Math.max(1, ...rows.map((r) => r.v)); return rows.map((r) => `<div class="row" ${r.attr || ''}><span style="width:78px">${esc(r.l)}</span><div class="bar-i" style="width:${(r.v / m) * 55}%;background:${color}"></div><span>${fmt(r.v)}</span></div>`).join(''); };
+
 pages.dashboard = async (root) => {
-  const s = await api('/reports/summary?days=30');
-  const max = Math.max(1, ...s.daily.map((d) => d.v)), cmax = Math.max(1, ...s.by_category.map((d) => d.v));
-  const k = (l, v, cls = '') => `<div class="card kpi"><div class="v ${cls}">${v}</div><div class="l">${l}</div></div>`;
-  root.innerHTML = `<div class="bar"><h1>الرئيسية (آخر 30 يوماً)</h1></div>
-  <div class="grid g4">${k('الإيرادات (ر.س)', money(s.revenue))}${k('صافي بعد الضريبة', money(s.net_revenue))}${k('الربح الإجمالي', money(s.gross_profit), 'up')}${k('هامش الربح', s.margin + '%')}
-  ${k('عدد الطلبات', s.orders)}${k('متوسط الطلب', money(s.avg_order))}${k('ضريبة القيمة المضافة', money(s.vat))}${k('قيمة المخزون', money(s.inventory_value))}
-  ${k('طلبات بانتظار التأكيد', s.pending_orders, s.pending_orders ? 'down' : '')}${k('أصناف تحت حد الطلب', s.low_stock, s.low_stock ? 'down' : '')}${k('العملاء', s.customers)}${k('رواتب شهرية', money(s.payroll))}</div>
-  <div class="grid g2" style="margin-top:1rem"><div class="card bars"><b>المبيعات اليومية</b>${s.daily.slice(-14).map((d) => `<div class="row"><span style="width:80px">${esc(d.d.slice(5))}</span><div class="bar-i" style="width:${(d.v / max) * 60}%"></div><span>${money(d.v)}</span></div>`).join('') || '<p>لا مبيعات</p>'}</div>
-  <div class="card bars"><b>حسب الفئة</b>${s.by_category.map((d) => `<div class="row"><span style="width:70px">${esc(d.c)}</span><div class="bar-i" style="width:${(d.v / cmax) * 60}%"></div><span>${money(d.v)}</span></div>`).join('')}
-  <hr><b>الأكثر مبيعاً</b>${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'المبلغ', f: (r) => money(r.v) }], s.top_products)}</div></div>`;
+  const st = { days: 30, metric: 'revenue', cat: null, d: null };
+  const load = guard(async () => {
+    st.d = await api(`/reports/summary?days=${st.days}${st.cat ? '&category=' + encodeURIComponent(st.cat) : ''}`); draw();
+  });
+  const kpi = (l, v, sub, go) => `<div class="card kpi ${go ? 'click' : ''}" ${go ? `data-go="${go}"` : ''}><div class="l">${l}</div><div class="v">${v}</div><div class="l">${sub || '&nbsp;'}</div></div>`;
+  function draw() {
+    const s = st.d, p = s.prev, per = { 7: 'أسبوع', 30: '30 يوماً', 90: '90 يوماً', 365: 'سنة' };
+    const chan = { store: 'المتجر', pos: 'نقطة بيع' };
+    root.innerHTML = `<div class="bar"><h1>لوحة المؤشرات</h1><span class="seg">${[7, 30, 90, 365].map((d) => `<button data-days="${d}" class="${d === s.days ? 'on' : ''}">${per[d]}</button>`).join('')}<button id="csv" title="تصدير البيانات اليومية">⬇ CSV</button></span></div>
+    <div class="grid g4">
+      ${kpi('الإيراد (شامل الضريبة)', money(s.revenue), delta(s.revenue, p.revenue) + ' عن الفترة السابقة')}
+      ${kpi('الربح الإجمالي', `<span class="up">${money(s.gross_profit)}</span>`, delta(s.gross_profit, p.gross_profit) + ' عن الفترة السابقة')}
+      ${kpi('هامش الربح', s.margin + '%', delta(s.margin, p.margin, 1))}
+      ${kpi('الطلبات', s.orders, delta(s.orders, p.orders) + ' · متوسط ' + money(s.avg_order))}
+      ${kpi('ضريبة القيمة المضافة', money(s.vat), delta(s.vat, p.vat))}
+      ${kpi('طلبات بانتظار التأكيد', `<span class="${s.pending_orders ? 'down' : ''}">${s.pending_orders}</span>`, 'اضغط للمراجعة ←', 'orders')}
+      ${kpi('أصناف تحت حد الطلب', `<span class="${s.low_stock ? 'down' : ''}">${s.low_stock}</span>`, 'اضغط لاقتراحات الشراء ←', 'analyst')}
+      ${kpi('قيمة المخزون', money(s.inventory_value), `${s.products} منتج · ${s.customers} عميل`, 'products')}</div>
+    <div class="card" style="margin-top:1rem"><div class="bar" style="margin:0 0 .5rem"><b>الاتجاه اليومي</b><span class="seg">${Object.entries(METRICS).map(([k, m]) => `<button data-m="${k}" class="${k === st.metric ? 'on' : ''}">${m[0]}</button>`).join('')}</span></div>${lineChart(s.daily, st.metric)}</div>
+    <div class="grid g2" style="margin-top:1rem">
+      <div class="card"><b>المبيعات حسب الفئة</b> <small class="l">(اضغط فئة للتعمق)</small><div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap" id="dn">${donut(s.by_category, st.cat)}
+        <div style="flex:1;min-width:190px">${s.by_category.map((c, i) => `<div class="leg ${st.cat === c.c ? 'on' : ''}" data-c="${esc(c.c)}"><i style="background:${PAL[i % 8]}"></i>${esc(c.c)}<span>${money(c.v)} <small class="up">ربح ${money(c.profit)}</small></span></div>`).join('')}</div></div></div>
+      <div class="card"><b>الأكثر مبيعاً${st.cat ? ' في ' + esc(st.cat) + ' <button class="btn sm ghost" id="clr">✕ إلغاء</button>' : ''}</b>
+        ${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'المبيعات', f: (r) => money(r.v) }, { l: 'الربح', html: (r) => `<span class="up">${money(r.profit)}</span>` }], s.top_products)}</div>
+      <div class="card bars"><b>أيام الأسبوع الأقوى</b>${hbars(WD.map((n, i) => ({ l: n, v: s.by_weekday.find((w) => w.w === i)?.v || 0 })), money)}
+        <hr><b>القنوات</b>${hbars(s.by_channel.map((c) => ({ l: chan[c.c] || c.c, v: c.v })), money, 'var(--brown)')}</div>
+      <div class="card"><b>أفضل العملاء</b>${table([{ l: 'العميل', k: 'name' }, { l: 'الطلبات', k: 'orders' }, { l: 'المشتريات', f: (r) => money(r.v) }], s.top_customers)}
+        <hr><b>⚠ مخزون منخفض</b>${s.low_stock_items.map((i) => `<div class="ins warn click" data-go="products">${esc(i.name)}: ${esc(i.stock)} ${esc(i.unit)} (الحد ${esc(i.reorder_level)})</div>`).join('') || '<p class="l">كل الأصناف بمستوى جيد ✅</p>'}</div>
+    </div>`;
+    bindLine(s.daily, st.metric);
+  }
+  root.onclick = (e) => {
+    const t = e.target, q = (sel) => t.closest(sel);
+    if (q('[data-days]')) { st.days = +q('[data-days]').dataset.days; load(); }
+    else if (q('[data-m]')) { st.metric = q('[data-m]').dataset.m; draw(); }
+    else if (q('[data-c]')) { const c = q('[data-c]').dataset.c; st.cat = st.cat === c ? null : c; load(); }
+    else if (q('#clr')) { st.cat = null; load(); }
+    else if (q('[data-go]')) nav(q('[data-go]').dataset.go);
+    else if (q('#csv')) {
+      const rows = ['التاريخ,الإيراد,الربح,الطلبات', ...st.d.daily.map((d) => [d.d, d.revenue, d.profit, d.orders].join(','))].join('\n');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + rows], { type: 'text/csv;charset=utf-8' })); a.download = `sales-${st.days}d.csv`; a.click(); URL.revokeObjectURL(a.href);
+    }
+  };
+  root.onmouseover = (e) => { const a = e.target.closest('.arc'); if (!a || st.cat) return; const c = st.d.by_category.find((x) => x.c === a.dataset.c); $('#dl').textContent = c.c; $('#dv').textContent = money(c.v); };
+  await load();
 };
 
 // نقطة بيع / طلب جديد
@@ -224,7 +306,7 @@ let current = null;
 async function nav(p) {
   current = p; location.hash = p;
   document.querySelectorAll('.side a[data-p]').forEach((a) => a.classList.toggle('on', a.dataset.p === p));
-  const root = $('#content'); root.innerHTML = 'جاري التحميل...'; root.onclick = null;
+  const root = $('#content'); root.innerHTML = 'جاري التحميل...'; root.onclick = null; root.onmouseover = null;
   try { await pages[p](root); } catch (e) { root.innerHTML = `<p class="down">${esc(e.message)}</p>`; }
 }
 function showApp() {

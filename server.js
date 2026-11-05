@@ -115,22 +115,40 @@ function createPO({ supplier_id, items, notes }) {
 }
 
 // ---------- التقارير ----------
-function summary(days) {
-  const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 19).replace('T', ' ');
-  const base = `FROM orders o WHERE o.status='completed' AND o.created_at >= ?`;
-  const t = get(`SELECT COUNT(*) orders, COALESCE(SUM(total),0) revenue, COALESCE(SUM(vat),0) vat ${base}`, from);
-  const cogs = get(`SELECT COALESCE(SUM(oi.qty*oi.cost),0) c FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status='completed' AND o.created_at >= ?`, from).c;
+const ts = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+function totals(from, to) {
+  const t = get(`SELECT COUNT(*) orders, COALESCE(SUM(total),0) revenue, COALESCE(SUM(vat),0) vat FROM orders WHERE status='completed' AND created_at >= ? AND created_at < ?`, from, to);
+  const cogs = get(`SELECT COALESCE(SUM(oi.qty*oi.cost),0) c FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status='completed' AND o.created_at >= ? AND o.created_at < ?`, from, to).c;
   const net = t.revenue - t.vat;
+  return { orders: t.orders, revenue: round2(t.revenue), vat: round2(t.vat), net_revenue: round2(net), cogs: round2(cogs), gross_profit: round2(net - cogs),
+    margin: net > 0 ? round2(((net - cogs) / net) * 100) : 0, avg_order: t.orders ? round2(t.revenue / t.orders) : 0 };
+}
+function summary(days, category) {
+  const now = new Date(Date.now() + 60000), from = new Date(Date.now() - days * 86400000), prevFrom = new Date(from.getTime() - days * 86400000);
+  const F = ts(from), T = ts(now);
+  const cur = totals(F, T), prev = totals(ts(prevFrom), F);
+  // سلسلة يومية كاملة (إيراد + ربح) مع ملء الأيام الفارغة
+  const rev = Object.fromEntries(all(`SELECT date(created_at) d, SUM(total-vat) v FROM orders WHERE status='completed' AND created_at >= ? GROUP BY d`, F).map((r) => [r.d, r.v]));
+  const cg = Object.fromEntries(all(`SELECT date(o.created_at) d, SUM(oi.qty*oi.cost) v FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY d`, F).map((r) => [r.d, r.v]));
+  const cnt = Object.fromEntries(all(`SELECT date(created_at) d, COUNT(*) n FROM orders WHERE status='completed' AND created_at >= ? GROUP BY d`, F).map((r) => [r.d, r.n]));
+  const daily = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    daily.push({ d, revenue: round2(rev[d] || 0), profit: round2((rev[d] || 0) - (cg[d] || 0)), orders: cnt[d] || 0 });
+  }
+  const cf = category ? ' AND p.category = ?' : '', cp = category ? [category] : [];
   return {
-    days, orders: t.orders, revenue: round2(t.revenue), vat: round2(t.vat), net_revenue: round2(net), cogs: round2(cogs),
-    gross_profit: round2(net - cogs), margin: net > 0 ? round2(((net - cogs) / net) * 100) : 0,
-    avg_order: t.orders ? round2(t.revenue / t.orders) : 0,
-    daily: all(`SELECT date(o.created_at) d, ROUND(SUM(total),2) v ${base} GROUP BY d ORDER BY d`, from),
-    by_category: all(`SELECT p.category c, ROUND(SUM(oi.qty*oi.price),2) v FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY p.category ORDER BY v DESC`, from),
-    top_products: all(`SELECT oi.name, ROUND(SUM(oi.qty),2) qty, ROUND(SUM(oi.qty*oi.price),2) v FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY oi.name ORDER BY v DESC LIMIT 8`, from),
+    days, category: category || null, ...cur, prev, daily,
+    by_category: all(`SELECT p.category c, ROUND(SUM(oi.qty*oi.price),2) v, ROUND(SUM(oi.qty*(oi.price-oi.cost)),2) profit FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY p.category ORDER BY v DESC`, F),
+    top_products: all(`SELECT oi.name, p.category, ROUND(SUM(oi.qty),2) qty, ROUND(SUM(oi.qty*oi.price),2) v, ROUND(SUM(oi.qty*(oi.price-oi.cost)),2) profit FROM order_items oi JOIN orders o ON o.id=oi.order_id JOIN products p ON p.id=oi.product_id WHERE o.status='completed' AND o.created_at >= ?${cf} GROUP BY oi.product_id ORDER BY v DESC LIMIT 10`, F, ...cp),
+    top_customers: all(`SELECT COALESCE(c.name,o.customer_name,'عميل نقدي') name, COUNT(*) orders, ROUND(SUM(o.total),2) v FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.status='completed' AND o.created_at >= ? GROUP BY COALESCE(o.customer_id, o.customer_name) ORDER BY v DESC LIMIT 5`, F),
+    by_channel: all(`SELECT channel c, COUNT(*) n, ROUND(SUM(total),2) v FROM orders WHERE status='completed' AND created_at >= ? GROUP BY channel`, F),
+    by_weekday: all(`SELECT CAST(strftime('%w',created_at) AS INT) w, ROUND(SUM(total),2) v FROM orders WHERE status='completed' AND created_at >= ? GROUP BY w`, F),
     pending_orders: get("SELECT COUNT(*) n FROM orders WHERE status='pending'").n,
     low_stock: get('SELECT COUNT(*) n FROM products WHERE active=1 AND stock <= reorder_level').n,
+    low_stock_items: all('SELECT name, stock, unit, reorder_level FROM products WHERE active=1 AND stock <= reorder_level ORDER BY stock/(reorder_level+0.001) LIMIT 6'),
     inventory_value: round2(get('SELECT COALESCE(SUM(stock*cost),0) v FROM products').v),
+    inventory_by_category: all('SELECT category c, ROUND(SUM(stock*cost),2) v FROM products GROUP BY category ORDER BY v DESC'),
     customers: get('SELECT COUNT(*) n FROM customers').n,
     products: get('SELECT COUNT(*) n FROM products WHERE active=1').n,
     payroll: round2(get('SELECT COALESCE(SUM(salary),0) s FROM employees WHERE active=1').s),
@@ -261,7 +279,7 @@ route('POST', '/api/purchases/:id/status', MGR, ({ params, body }) => {
 });
 
 // التقارير والمحلل
-route('GET', '/api/reports/summary', ['admin', 'manager', 'accountant'], ({ query }) => summary(Math.min(Math.max(num(query.get('days') || 30, 30), 1), 365)));
+route('GET', '/api/reports/summary', ['admin', 'manager', 'accountant'], ({ query }) => summary(Math.min(Math.max(Math.round(num(query.get('days') || 30, 30)), 1), 365), CATEGORIES.includes(query.get('category')) ? query.get('category') : null));
 route('GET', '/api/analyst/reorder', MGR.concat('accountant'), () => ({ suggestions: reorderSuggestions(), insights: businessInsights() }));
 route('POST', '/api/analyst/create-po', MGR, ({ body }) => {
   const items = Array.isArray(body.items) ? body.items : [];
