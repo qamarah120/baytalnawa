@@ -1,0 +1,12 @@
+{
+  "name": "baytalnawa",
+  "version": "0.1.0",
+  "description": "نظام إدارة بيت النوى - متجر ولوحة تحكم ومحلل سوق",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  }
+}
