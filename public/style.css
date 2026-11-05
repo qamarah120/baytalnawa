@@ -40,3 +40,20 @@ th,td{padding:.5rem .7rem;text-align:right;border-bottom:1px solid var(--line);w
 .kpi .l{color:var(--mut);font-size:.8rem}.chart{position:relative}.tip{position:absolute;top:0;transform:translateX(-50%);background:var(--ink);color:#fff;padding:.4rem .7rem;border-radius:8px;font-size:.8rem;pointer-events:none;white-space:nowrap;direction:rtl;text-align:right}
 .leg{display:flex;align-items:center;gap:.5rem;padding:.25rem .4rem;border-radius:6px;font-size:.88rem}.leg i{width:11px;height:11px;border-radius:3px;flex-shrink:0}.leg span{margin-inline-start:auto}.leg:hover,.leg.on{background:#f4ebdd}
 .arc:hover{filter:brightness(1.1)}
+/* store v2 */
+.shead{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line)}.shead-in{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.6rem 1rem}
+.shead-in .logo{color:var(--brown);font-size:1.2rem}.shead-in input{flex:1;min-width:140px}.shead-in select{width:auto}
+.hero{padding:1.6rem 1rem}.hero h1{font-size:1.7rem}
+.l{color:var(--mut)}.desc{color:var(--mut);font-size:.8rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.stepper{display:inline-flex;align-items:center;gap:.5rem;border:1px solid var(--line);border-radius:99px;padding:.1rem .3rem;background:#fff}.stepper button{border:0;background:var(--cream);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:1.1rem;color:var(--brown)}.stepper b{font-size:.85rem;min-width:52px;text-align:center}
+.cl{display:flex;gap:.5rem;align-items:center;margin:.4rem 0}
+.hscroll{display:flex;overflow-x:auto;padding-bottom:.5rem}.hscroll .prod{min-width:210px}
+.sfoot{border-top:1px solid var(--line);margin-top:2rem;padding:1rem 0;color:var(--mut);font-size:.9rem}
+.prod .ph{height:130px;font-size:3rem}.prod{transition:.15s}.prod:hover{box-shadow:0 4px 14px rgba(90,58,34,.12);transform:translateY(-2px)}
+:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+/* v2 */
+th.sortable{cursor:pointer;user-select:none}th.sortable:hover{background:#ecdfc9}
+tbody tr:hover{background:#fbf3e4}
+.srcl{display:block;padding:.6rem .8rem;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--ink);background:#fff}.srcl:hover{border-color:var(--gold)}
+details summary{cursor:pointer;color:var(--brown)}
+@media(max-width:760px){.side a{padding:.35rem .6rem;font-size:.9rem}.main{padding:.7rem}.hero h1{font-size:1.3rem}}

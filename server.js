@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { all, get, run, tx, getSetting, setSetting } from './lib/db.js';
 import { hashPassword, verifyPassword, signToken, userFromToken } from './lib/auth.js';
 import { reorderSuggestions, businessInsights, CATEGORIES } from './lib/analyst.js';
-import { indicators, news, NEWS_CATEGORIES } from './lib/market.js';
+import { indicators, news, NEWS_CATEGORIES, OFFICIAL } from './lib/market.js';
 
 const PUB = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT || 3000);
@@ -281,6 +281,16 @@ route('POST', '/api/purchases/:id/status', MGR, ({ params, body }) => {
 // التقارير والمحلل
 route('GET', '/api/reports/summary', ['admin', 'manager', 'accountant'], ({ query }) => summary(Math.min(Math.max(Math.round(num(query.get('days') || 30, 30)), 1), 365), CATEGORIES.includes(query.get('category')) ? query.get('category') : null));
 route('GET', '/api/analyst/reorder', MGR.concat('accountant'), () => ({ suggestions: reorderSuggestions(), insights: businessInsights() }));
+route('GET', '/api/analyst/product/:id', MGR.concat('accountant'), ({ params }) => {
+  const p = get('SELECT id,name,unit,stock FROM products WHERE id=?', params.id);
+  if (!p) throw new HttpError(404, 'غير موجود');
+  const rows = Object.fromEntries(all(`SELECT date(o.created_at) d, SUM(oi.qty) q FROM order_items oi JOIN orders o ON o.id=oi.order_id
+    WHERE o.status='completed' AND oi.product_id=? AND o.created_at >= datetime('now','-60 days') GROUP BY d`, p.id).map((r) => [r.d, r.q]));
+  const daily = [];
+  for (let i = 59; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10); daily.push({ d, q: rows[d] || 0 }); }
+  const sug = reorderSuggestions().find((x) => x.product_id === p.id) || null;
+  return { product: p, daily, suggestion: sug };
+});
 route('POST', '/api/analyst/create-po', MGR, ({ body }) => {
   const items = Array.isArray(body.items) ? body.items : [];
   const groups = new Map();
@@ -296,7 +306,7 @@ route('GET', '/api/market/indicators', MGR.concat('accountant'), async () => ind
 route('GET', '/api/market/news', MGR.concat('accountant'), async ({ query }) => {
   const cat = query.get('cat') || 'saudi';
   const items = await news(cat).catch(() => null);
-  return { categories: NEWS_CATEGORIES, items: items || [], error: items ? null : 'تعذر جلب الأخبار (تحقق من الاتصال بالإنترنت)' };
+  return { categories: NEWS_CATEGORIES, sources: OFFICIAL[cat] || OFFICIAL.saudi, items: items || [], error: items ? null : 'تعذر جلب الأخبار (تحقق من الاتصال بالإنترنت)' };
 });
 
 // الإعدادات

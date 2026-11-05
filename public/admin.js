@@ -39,8 +39,8 @@ function formModal(title, fields, vals, onSave) {
   });
 }
 const closeModal = () => ($('#modal').innerHTML = '');
-function table(cols, rows, actions) {
-  return `<div class="tbl-wrap"><table><thead><tr>${cols.map((c) => `<th>${esc(c.l)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead><tbody>${
+function table(cols, rows, actions, sort) {
+  return `<div class="tbl-wrap"><table><thead><tr>${cols.map((c, i) => `<th ${sort ? `data-sort="${i}" class="sortable"` : ''}>${esc(c.l)}${sort && sort.i === i ? (sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead><tbody>${
     rows.map((r) => `<tr>${cols.map((c) => `<td>${c.html ? c.html(r) : esc(c.f ? c.f(r) : r[c.k])}</td>`).join('')}${actions ? `<td>${actions(r)}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${cols.length + 1}">لا توجد بيانات</td></tr>`}</tbody></table></div>`;
 }
 
@@ -49,22 +49,29 @@ const pages = {};
 let cache = {};
 const getList = async (e) => (cache[e] = await api('/' + e));
 
-function crud(key, title, cols, fieldsFn, can) {
+function crud(key, title, cols, fieldsFn, can, chipKey) {
   pages[key] = async (root) => {
     let rows = await api('/' + key); const fields = await fieldsFn();
+    const st = { q: '', chip: '', sort: null };
+    const val = (r, c) => (c.f ? c.f(r) : r[c.k]);
     const draw = () => {
-      root.innerHTML = `<div class="bar"><h1>${title}</h1><span><input id="q" placeholder="بحث..." style="width:180px"> ${can ? '<button class="btn" id="add">+ إضافة</button>' : ''}</span></div><div id="t"></div>`;
-      const show = (q = '') => { const f = rows.filter((r) => JSON.stringify(Object.values(r)).includes(q));
-        $('#t').innerHTML = table(cols, f, can ? (r) => `<button class="btn sm ghost" data-e="${r.id}">تعديل</button> <button class="btn sm danger" data-d="${r.id}">حذف</button>` : null); };
-      show(); $('#q').oninput = (e) => show(e.target.value);
-      if (can) {
-        $('#add').onclick = () => formModal('إضافة', fields, {}, async (o) => { await api('/' + key, 'POST', o); toast('تمت الإضافة'); rows = await api('/' + key); draw(); });
-        $('#t').onclick = guard(async (e) => {
-          const ed = e.target.dataset.e, del = e.target.dataset.d;
-          if (ed) { const r = rows.find((x) => x.id == ed); formModal('تعديل', fields, r, async (o) => { await api(`/${key}/${ed}`, 'PUT', o); toast('تم الحفظ'); rows = await api('/' + key); draw(); }); }
-          if (del && confirm('تأكيد الحذف؟')) { await api(`/${key}/${del}`, 'DELETE'); rows = await api('/' + key); draw(); }
-        });
-      }
+      const chips = chipKey ? [...new Set(rows.map((r) => r[chipKey]))].filter(Boolean) : [];
+      root.innerHTML = `<div class="bar"><h1>${title} <small class="l">(${rows.length})</small></h1><span><input id="q" placeholder="بحث..." value="${esc(st.q)}" style="width:180px"> ${can ? '<button class="btn" id="add">+ إضافة</button>' : ''}</span></div>
+      ${chips.length ? `<div class="tabs"><button class="${st.chip ? '' : 'on'}" data-chip="">الكل</button>${chips.map((c) => `<button class="${st.chip === c ? 'on' : ''}" data-chip="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}<div id="t"></div>`;
+      const show = () => {
+        let f = rows.filter((r) => (!st.chip || r[chipKey] === st.chip) && JSON.stringify(Object.values(r)).includes(st.q));
+        if (st.sort) { const c = cols[st.sort.i]; f = [...f].sort((x, y) => { const a1 = val(x, c), b1 = val(y, c), n1 = parseFloat(String(a1).replace(/[^\d.-]/g, '')), n2 = parseFloat(String(b1).replace(/[^\d.-]/g, '')); return st.sort.dir * (!isNaN(n1) && !isNaN(n2) ? n1 - n2 : String(a1).localeCompare(String(b1), 'ar')); }); }
+        $('#t').innerHTML = table(cols, f, can ? (r) => `<button class="btn sm ghost" data-e="${r.id}">تعديل</button> <button class="btn sm danger" data-d="${r.id}">حذف</button>` : null, st.sort || {});
+      };
+      show(); const qi = $('#q'); qi.oninput = (e) => { st.q = e.target.value; show(); };
+      root.onclick = guard(async (e) => {
+        const t = e.target, th = t.closest('[data-sort]'), chip = t.closest('[data-chip]');
+        if (th) { const i = +th.dataset.sort; st.sort = st.sort?.i === i ? { i, dir: -st.sort.dir } : { i, dir: 1 }; return show(); }
+        if (chip) { st.chip = chip.dataset.chip; return draw(); }
+        if (t.id === 'add') return formModal('إضافة', fields, {}, async (o) => { await api('/' + key, 'POST', o); toast('تمت الإضافة'); rows = await api('/' + key); draw(); });
+        if (t.dataset.e) { const r = rows.find((x) => x.id == t.dataset.e); formModal('تعديل', fields, r, async (o) => { await api(`/${key}/${t.dataset.e}`, 'PUT', o); toast('تم الحفظ'); rows = await api('/' + key); draw(); }); }
+        if (t.dataset.d && confirm('تأكيد الحذف؟')) { await api(`/${key}/${t.dataset.d}`, 'DELETE'); rows = await api('/' + key); draw(); }
+      });
     };
     draw();
   };
@@ -84,7 +91,7 @@ crud('products', 'المنتجات والعروض', [
   { k: 'stock', l: 'المخزون الحالي', t: 'number' }, { k: 'reorder_level', l: 'حد إعادة الطلب', t: 'number' }, { k: 'lead_days', l: 'مدة التوريد (أيام)', t: 'number' },
   { k: 'supplier_id', l: 'المورد', t: 'select', opts: await supplierOpts() }, { k: 'offer_percent', l: 'خصم العرض %', t: 'number' }, { k: 'offer_ends', l: 'نهاية العرض', t: 'date' },
   { k: 'image', l: 'رابط صورة (اختياري)' }, { k: 'description', l: 'الوصف', t: 'textarea' }, { k: 'active', l: 'ظاهر في المتجر', t: 'checkbox' },
-], true);
+], true, 'category');
 crud('customers', 'العملاء', [{ l: 'الاسم', k: 'name' }, { l: 'الجوال', k: 'phone' }, { l: 'المدينة', k: 'city' }, { l: 'النوع', k: 'type' }, { l: 'ملاحظات', k: 'notes' }, { l: 'منذ', f: (r) => r.created_at.slice(0, 10) }],
   async () => [{ k: 'name', l: 'الاسم', req: 1 }, { k: 'phone', l: 'الجوال' }, { k: 'city', l: 'المدينة' }, { k: 'type', l: 'النوع', t: 'select', opts: [['فرد', 'فرد'], ['تجاري', 'تجاري (مطعم/مقهى/متجر)']] }, { k: 'notes', l: 'ملاحظات', t: 'textarea' }], true);
 crud('employees', 'الموظفون', [{ l: 'الاسم', k: 'name' }, { l: 'الوظيفة', k: 'job' }, { l: 'الجوال', k: 'phone' }, { l: 'الراتب', f: (r) => money(r.salary) }, { l: 'التعيين', k: 'hired_at' }, { l: 'نشط', f: (r) => (r.active ? 'نعم' : 'لا') }],
@@ -205,14 +212,18 @@ pages.sale = async (root) => {
   draw();
 };
 pages.orders = async (root) => {
-  const rows = await api('/orders');
-  root.innerHTML = `<div class="bar"><h1>الطلبات</h1><button class="btn" id="n">+ بيع جديد</button></div>${table([
+  const all0 = await api('/orders'); const flt = pages._of || (pages._of = { s: '', q: '' });
+  const rows = all0.filter((r) => (!flt.s || r.status === flt.s) && (!flt.q || JSON.stringify(Object.values(r)).includes(flt.q)));
+  root.innerHTML = `<div class="bar"><h1>الطلبات <small class="l">(${rows.length})</small></h1><span><input id="oq" placeholder="بحث..." value="${esc(flt.q)}" style="width:160px"> <button class="btn" id="n">+ بيع جديد</button></span></div>
+  <div class="tabs">${[['', 'الكل'], ['pending', 'قيد الانتظار (' + all0.filter((r) => r.status === 'pending').length + ')'], ['completed', 'مكتمل'], ['cancelled', 'ملغي']].map(([k, l]) => `<button data-fs="${k}" class="${flt.s === k ? 'on' : ''}">${l}</button>`).join('')}</div>${table([
     { l: '#', k: 'id' }, { l: 'التاريخ', f: (r) => r.created_at.slice(0, 16) }, { l: 'العميل', k: 'cname' }, { l: 'القناة', f: (r) => (r.channel === 'store' ? 'المتجر' : 'نقطة بيع') },
     { l: 'الأصناف', k: 'items' }, { l: 'الإجمالي', f: (r) => money(r.total) }, { l: 'الحالة', html: (r) => badge(r.status) }],
     rows, (r) => `<button class="btn sm ghost" data-v="${r.id}">عرض</button>${r.status === 'pending' ? ` <button class="btn sm" data-s="completed" data-id="${r.id}">تأكيد</button>` : ''}${r.status !== 'cancelled' ? ` <button class="btn sm danger" data-s="cancelled" data-id="${r.id}">إلغاء</button>` : ''}`)}`;
   $('#n').onclick = () => nav('sale');
+  $('#oq').onchange = (e) => { flt.q = e.target.value; pages.orders(root); };
   root.onclick = guard(async (e) => {
     const t = e.target;
+    if (t.dataset.fs !== undefined) { flt.s = t.dataset.fs; return pages.orders(root); }
     if (t.dataset.s) { if (t.dataset.s === 'cancelled' && !confirm('إلغاء الطلب؟')) return; await api(`/orders/${t.dataset.id}/status`, 'POST', { status: t.dataset.s }); toast('تم'); pages.orders(root); }
     if (t.dataset.v) { const o = await api('/orders/' + t.dataset.v); $('#modal').innerHTML = `<div class="modal-bg"><div class="modal"><h3>طلب #${o.id}</h3><p>${esc(o.customer_name || '')} ${esc(o.customer_phone || '')}</p>${o.notes ? `<p>ملاحظات: ${esc(o.notes)}</p>` : ''}${table([{ l: 'المنتج', k: 'name' }, { l: 'الكمية', k: 'qty' }, { l: 'السعر', f: (r) => money(r.price) }], o.items)}<p>الخصم: ${money(o.discount)} | الضريبة: ${money(o.vat)} | <b>الإجمالي: ${money(o.total)}</b></p><button class="btn ghost" id="mc">إغلاق</button></div></div>`; $('#mc').onclick = closeModal; }
   });
@@ -235,47 +246,80 @@ pages.analyst = async (root) => {
   const { suggestions, insights } = await api('/analyst/reorder');
   const ind = await api('/market/indicators').catch(() => ({ insights: [] }));
   const all = [...insights, ...(ind.insights || [])];
-  const total = (sel) => suggestions.filter((s) => sel.has(s.product_id)).reduce((a, s) => a + s.estimated_cost, 0);
-  root.innerHTML = `<div class="bar"><h1>المحلل: أوامر الشراء والكميات</h1></div>
-  <div class="card"><b>تنبيهات وتوصيات</b>${all.map((i) => `<div class="ins ${esc(i.level)}">${esc(i.text)}</div>`).join('') || '<p>لا تنبيهات حالياً ✅</p>'}</div>
-  <p style="color:var(--mut)">الاقتراح = (الطلب اليومي × مضاعف الموسم × 30 يوماً + الطلب خلال مدة التوريد) + 20% أمان − المخزون. يعتمد على مبيعات آخر 30 و90 يوماً ومواسم رمضان والعيد واليوم الوطني والشتاء.</p>
-  <div id="t"></div><p><b id="tot"></b> <button class="btn" id="mk">إنشاء أوامر شراء للمحدد (حسب المورد)</button></p>`;
   const sel = new Set(suggestions.filter((s) => s.urgency === 'critical').map((s) => s.product_id));
   const qtys = new Map(suggestions.map((s) => [s.product_id, s.suggested_qty]));
+  const st = { urg: '', sup: '', q: '' };
+  const sups = [...new Set(suggestions.map((s) => s.supplier_name || '—'))];
+  const cnt = (u) => suggestions.filter((s) => s.urgency === u).length;
+  const selCost = () => suggestions.filter((s) => sel.has(s.product_id)).reduce((a, s) => a + qtys.get(s.product_id) * s.cost, 0);
+  root.innerHTML = `<div class="bar"><h1>المحلل: أوامر الشراء والكميات</h1></div>
+  <div class="grid g4"><div class="card kpi"><div class="l">أصناف عاجلة</div><div class="v down">${cnt('critical')}</div></div><div class="card kpi"><div class="l">أصناف قريباً</div><div class="v" style="color:var(--warn)">${cnt('soon')}</div></div>
+  <div class="card kpi"><div class="l">تكلفة كل المقترح</div><div class="v">${money(suggestions.reduce((a, s) => a + s.estimated_cost, 0))}</div></div><div class="card kpi"><div class="l">تكلفة المحدد</div><div class="v up" id="selc"></div></div></div>
+  <div class="card" style="margin-top:1rem"><b>تنبيهات وتوصيات</b>${all.map((i) => `<div class="ins ${esc(i.level)}">${esc(i.text)}</div>`).join('') || '<p>لا تنبيهات حالياً ✅</p>'}</div>
+  <details style="margin:.8rem 0"><summary>كيف تُحسب الكمية؟</summary><p class="l">الكمية = (الطلب اليومي × مضاعف الموسم × 30 يوماً + الطلب خلال مدة التوريد) + 20% أمان − المخزون الحالي. الطلب اليومي = 60% من معدل آخر 30 يوماً + 40% من معدل آخر 90 يوماً. المواسم: رمضان والعيد والحج واليوم الوطني والشتاء والصيف. اقتراحات إرشادية فراجعها قبل الاعتماد.</p></details>
+  <div class="bar"><span class="seg"><button data-u="" class="on">الكل</button><button data-u="critical">عاجل</button><button data-u="soon">قريباً</button></span>
+  <span><select id="sf" style="width:auto"><option value="">كل الموردين</option>${sups.map((x) => `<option>${esc(x)}</option>`).join('')}</select> <input id="sq" placeholder="بحث..." style="width:150px"></span></div>
+  <div id="t"></div><p style="margin-top:1rem"><button class="btn" id="mk">إنشاء أوامر شراء للمحدد (حسب المورد)</button> <button class="btn ghost" id="sa">تحديد الظاهر</button> <button class="btn ghost" id="sn">إلغاء التحديد</button></p>`;
+  const rows = () => suggestions.filter((s) => (!st.urg || s.urgency === st.urg) && (!st.sup || (s.supplier_name || '—') === st.sup) && (!st.q || s.name.includes(st.q)));
   const drawT = () => {
+    $('#selc').textContent = money(selCost());
     $('#t').innerHTML = table([
       { l: '', html: (s) => `<input type="checkbox" data-c="${s.product_id}" style="width:auto" ${sel.has(s.product_id) ? 'checked' : ''}>` },
-      { l: 'المنتج', k: 'name' }, { l: 'المورد', f: (s) => s.supplier_name || '—' }, { l: 'الأولوية', html: (s) => badge(s.urgency) },
-      { l: 'المخزون', k: 'stock' }, { l: 'أيام التغطية', f: (s) => s.days_left ?? '—' }, { l: 'الموسم', f: (s) => '×' + s.season_factor },
+      { l: 'المنتج', html: (s) => `<a href="#" data-det="${s.product_id}"><b>${esc(s.name)}</b></a>` }, { l: 'المورد', f: (s) => s.supplier_name || '—' }, { l: 'الأولوية', html: (s) => badge(s.urgency) },
+      { l: 'المخزون', f: (s) => `${s.stock} ${s.unit}` }, { l: 'تكفي', f: (s) => (s.days_left == null ? '—' : s.days_left + ' يوم') }, { l: 'الموسم', f: (s) => '×' + s.season_factor },
       { l: 'الكمية المقترحة', html: (s) => `<input type="number" min="0" step="0.5" value="${qtys.get(s.product_id)}" data-q="${s.product_id}" style="width:90px">` },
-      { l: 'التكلفة التقديرية', html: (s) => money(qtys.get(s.product_id) * s.cost) }, { l: 'السبب', html: (s) => `<small style="white-space:normal;display:block;min-width:220px">${s.reasons.map(esc).join(' · ')}</small>` }], suggestions);
-    $('#tot').textContent = 'إجمالي المحدد: ' + money(suggestions.filter((s) => sel.has(s.product_id)).reduce((a, s) => a + qtys.get(s.product_id) * s.cost, 0)) + ' ر.س';
+      { l: 'التكلفة', f: (s) => money(qtys.get(s.product_id) * s.cost) }], rows());
   };
   drawT();
-  $('#t').onchange = (e) => { const c = e.target.dataset.c, q = e.target.dataset.q; if (c) e.target.checked ? sel.add(+c) : sel.delete(+c); if (q) qtys.set(+q, Number(e.target.value)); drawT(); };
+  root.onclick = guard(async (e) => {
+    const t = e.target, u = t.closest('[data-u]'), d = t.closest('[data-det]');
+    if (u) { st.urg = u.dataset.u; root.querySelectorAll('[data-u]').forEach((b) => b.classList.toggle('on', b === u)); drawT(); }
+    if (d) { e.preventDefault(); const r = await api('/analyst/product/' + d.dataset.det); const s = r.suggestion;
+      const mx = Math.max(0.1, ...r.daily.map((x) => x.q)), W = 480, H = 110, bw = W / r.daily.length;
+      $('#modal').innerHTML = `<div class="modal-bg"><div class="modal"><h3>${esc(r.product.name)}</h3><b>مبيعات آخر 60 يوماً (${esc(r.product.unit)}/يوم)</b>
+      <div class="chart" dir="ltr"><svg viewBox="0 0 ${W} ${H}" width="100%">${r.daily.map((x, i) => `<rect x="${i * bw + 0.5}" y="${H - (x.q / mx) * (H - 6)}" width="${bw - 1}" height="${(x.q / mx) * (H - 6)}" fill="#c8923a"><title>${x.d}: ${x.q}</title></rect>`).join('')}</svg></div>
+      ${s ? `<p>المخزون الحالي: <b>${esc(s.stock)}</b> · المعدل اليومي: <b>${s.daily_rate}</b> · مضاعف الموسم: <b>×${s.season_factor}</b> · المقترح: <b>${s.suggested_qty}</b></p>${s.reasons.map((x) => `<div class="ins">${esc(x)}</div>`).join('')}` : '<p>لا حاجة لإعادة طلب حالياً.</p>'}
+      <button class="btn ghost" id="mc">إغلاق</button></div></div>`; $('#mc').onclick = closeModal; }
+  });
+  root.onchange = (e) => { const c = e.target.dataset.c, q = e.target.dataset.q;
+    if (c) { e.target.checked ? sel.add(+c) : sel.delete(+c); $('#selc').textContent = money(selCost()); }
+    if (q) { qtys.set(+q, Number(e.target.value)); drawT(); }
+    if (e.target.id === 'sf') { st.sup = e.target.value; drawT(); } };
+  $('#sq').oninput = (e) => { st.q = e.target.value; drawT(); };
+  $('#sa').onclick = () => { rows().forEach((s) => sel.add(s.product_id)); drawT(); };
+  $('#sn').onclick = () => { sel.clear(); drawT(); };
   $('#mk').onclick = guard(async () => {
     const items = [...sel].map((id) => ({ product_id: id, qty: qtys.get(id) })).filter((i) => i.qty > 0);
+    if (!items.length) throw new Error('اختر أصنافاً أولاً');
     const r = await api('/analyst/create-po', 'POST', { items }); toast(`أُنشئ ${r.ids.length} أمر شراء (مسودة)`); nav('purchases');
   });
 };
 
 pages.market = async (root) => {
-  root.innerHTML = '<div class="bar"><h1>السوق والأخبار</h1></div><div id="ind" class="card">جاري التحميل...</div><div class="tabs" id="tabs"></div><div id="news" class="card"></div>';
-  const spark = (v) => { if (!v?.length) return ''; const mn = Math.min(...v), mx = Math.max(...v) || 1, r = mx - mn || 1; return `<svg width="90" height="24" viewBox="0 0 90 24"><polyline fill="none" stroke="#c8923a" stroke-width="1.6" points="${v.map((x, i) => `${(i / (v.length - 1)) * 90},${22 - ((x - mn) / r) * 20}`).join(' ')}"/></svg>`; };
+  const KW = { 'تمور': /تمر|تمور|نخيل/, 'قهوة': /قهوة|بن/, 'عسل': /عسل/, 'مكسرات': /مكسرات|لوز|فستق|كاجو/, 'سمن': /سمن|زبدة|ألبان/, 'أسعار': /تضخم|أسعار|الرقم القياسي/, 'ضريبة وجمارك': /ضريب|جمرك|جمارك|فوتر|زكاة/, 'اشتراطات': /اشتراط|غذاء|استدعاء|سلامة/ };
+  root.innerHTML = `<div class="bar"><h1>السوق والأخبار الرسمية</h1></div>
+  <div class="ins season">الأخبار هنا لا تُعرض إلا إذا كان مصدرها جهة رسمية من القائمة أدناه، وعلى كل خبر شارة المصدر. المؤشرات المالية من مزوّد تجاري (Yahoo Finance) وليست رسمية؛ للقيم الرسمية راجع تداول وساما. سعر صرف الريال مثبّت رسمياً عند 3.75 ريال للدولار (ساما).</div>
+  <div id="ind" class="card">جاري التحميل...</div><div class="bar" style="margin-top:1rem"><h2 style="margin:0">أخبار من الجهات الرسمية</h2><input id="nq" placeholder="بحث في الأخبار..." style="width:200px"></div><div class="tabs" id="tabs"></div><div id="news" class="card"></div><div id="src" class="card" style="margin-top:1rem"></div>`;
+  const spark = (v) => { if (!v?.length) return ''; const mn = Math.min(...v), mx = Math.max(...v), r = mx - mn || 1; return `<svg width="90" height="24" viewBox="0 0 90 24"><polyline fill="none" stroke="#c8923a" stroke-width="1.6" points="${v.map((x, i) => `${(i / (v.length - 1)) * 90},${22 - ((x - mn) / r) * 20}`).join(' ')}"/></svg>`; };
   api('/market/indicators').then((d) => {
     const groups = {}; (d.items || []).forEach((i) => (groups[i.group] ||= []).push(i));
     $('#ind').innerHTML = (d.error ? `<p class="down">${esc(d.error)}</p>` : '') + (d.insights || []).map((i) => `<div class="ins ${esc(i.level)}">${esc(i.text)}</div>`).join('') +
       Object.entries(groups).map(([g, its]) => `<h3>${esc(g)}</h3><div class="grid g4">${its.map((i) => `<div class="card kpi"><div class="l">${esc(i.name)}</div>${i.error ? '<div class="l">غير متاح</div>' : `<div class="v">${Number(i.price).toLocaleString('en-US', { maximumFractionDigits: i.digits || 2 })}</div><div class="${i.change >= 0 ? 'up' : 'down'}">${i.change == null ? '' : (i.change >= 0 ? '▲ ' : '▼ ') + Math.abs(i.change).toFixed(2) + '%'}</div>${spark(i.series)}`}</div>`).join('')}</div>`).join('') +
-      '<small style="color:var(--mut)">البيانات من Yahoo Finance وقد تتأخر. للاطلاع فقط وليست توصية استثمارية.</small>';
+      '<small class="l">المصدر: Yahoo Finance (غير رسمي) وقد يتأخر. للاطلاع فقط وليست توصية استثمارية.</small>';
   }).catch((e) => ($('#ind').textContent = e.message));
-  const load = guard(async (cat) => {
-    $('#news').textContent = 'جاري التحميل...';
-    const d = await api('/market/news?cat=' + cat);
+  let items = [], cat = 'saudi';
+  const showNews = () => { const q = $('#nq').value.trim(); const f = items.filter((n) => !q || n.title.includes(q));
+    $('#news').innerHTML = f.map((n) => { const tags = Object.entries(KW).filter(([, re]) => re.test(n.title)).map(([k]) => `<span class="badge b-ordered">${esc(k)}</span>`).join(' ');
+      return `<p><a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a><br><span class="badge b-ok">✓ مصدر رسمي: ${esc(n.source)}</span> <small class="l">${esc(n.host)} · ${esc(n.date)}</small> ${tags}</p>`; }).join('') || '<p class="l">لا توجد أخبار حديثة من المصادر الرسمية لهذا القسم، أو تعذر الاتصال. يمكنك زيارة المواقع الرسمية أدناه مباشرة.</p>'; };
+  const load = guard(async (c) => {
+    cat = c; $('#news').textContent = 'جاري التحميل...';
+    const d = await api('/market/news?cat=' + c); items = d.items;
     $('#tabs').innerHTML = Object.entries(d.categories).map(([k, v]) => `<button class="${k === cat ? 'on' : ''}" data-c="${k}">${esc(v)}</button>`).join('');
-    $('#news').innerHTML = (d.error ? `<p class="down">${esc(d.error)}</p>` : '') + d.items.map((n) => `<p><a href="${esc(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a><br><small style="color:var(--mut)">${esc(n.source)} · ${esc(n.date)}</small></p>`).join('');
+    $('#src').innerHTML = `<b>المواقع الرسمية لهذا القسم</b><div class="grid g2" style="margin-top:.5rem">${d.sources.map((s) => `<a class="srcl" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer"><b>${esc(s.name)}</b><br><small class="l">${esc(s.desc)} · ${esc(s.host)}</small></a>`).join('')}</div>`;
+    if (d.error) toast(d.error); showNews();
   });
   $('#tabs').onclick = (e) => e.target.dataset.c && load(e.target.dataset.c);
-  load('saudi');
+  $('#nq').oninput = showNews; load('saudi');
 };
 
 pages.users = async (root) => {
