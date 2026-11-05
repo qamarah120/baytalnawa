@@ -161,6 +161,9 @@ const route = (method, pattern, roles, handler) => routes.push({ method, re: new
 const ALL = ['admin', 'manager', 'sales', 'accountant'];
 const MGR = ['admin', 'manager'];
 
+// صفحة الهبوط (عامة): بيانات التواصل فقط
+route('GET', '/api/landing', null, () => ({ name: getSetting('store_name', 'بيت النوى'), whatsapp: getSetting('whatsapp', ''), phone: getSetting('phone', ''), city: getSetting('city', '') }));
+
 // المصادقة
 const attempts = new Map();
 route('POST', '/api/login', null, ({ body, ip }) => {
@@ -291,8 +294,12 @@ route('GET', '/api/market/news', MGR.concat('accountant'), async ({ query }) => 
 });
 
 // الإعدادات
-route('GET', '/api/settings', ['admin'], () => ({ vat_rate: getSetting('vat_rate', '15') }));
+route('GET', '/api/settings', ['admin'], () => ({ store_name: getSetting('store_name', 'بيت النوى'), whatsapp: getSetting('whatsapp', ''), phone: getSetting('phone', ''), city: getSetting('city', ''), vat_rate: getSetting('vat_rate', '15') }));
 route('PUT', '/api/settings', ['admin'], ({ body }) => {
+  if ('store_name' in body) setSetting('store_name', str(body.store_name, 80));
+  if ('whatsapp' in body) setSetting('whatsapp', String(body.whatsapp || '').replace(/[^0-9]/g, '').slice(0, 15));
+  if ('phone' in body) setSetting('phone', String(body.phone || '').replace(/[^0-9+]/g, '').slice(0, 16));
+  if ('city' in body) setSetting('city', str(body.city, 60) || '');
   if ('vat_rate' in body) { const v = num(body.vat_rate, -1); if (v < 0 || v > 50) throw bad('نسبة ضريبة غير صحيحة'); setSetting('vat_rate', v); }
   return { ok: true };
 });
@@ -328,7 +335,7 @@ export const server = http.createServer(async (req, res) => {
     }
     // ملفات ثابتة
     let p = decodeURIComponent(url.pathname);
-    if (p === '/' || p === '/admin') p = '/admin.html';
+    if (p === '/') p = '/index.html'; else if (p === '/admin') p = '/admin.html';
     const file = path.join(PUB, path.normalize(p));
     if (!file.startsWith(PUB + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'غير موجود', { 'content-type': 'text/plain; charset=utf-8' });
     send(res, 200, fs.readFileSync(file), { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });

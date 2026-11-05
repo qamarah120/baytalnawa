@@ -333,7 +333,7 @@ pages.users = async (root) => {
 };
 pages.settings = async (root) => {
   const s = await api('/settings');
-  root.innerHTML = `<div class="bar"><h1>الإعدادات</h1></div><div class="grid g2"><form class="card" id="f"><b>الضريبة</b><label>نسبة ضريبة القيمة المضافة %</label><input name="vat_rate" type="number" value="${esc(s.vat_rate)}"><p><button class="btn">حفظ</button></p></form>
+  root.innerHTML = `<div class="bar"><h1>الإعدادات</h1></div><div class="grid g2"><form class="card" id="f"><b>بيانات المؤسسة (تظهر في صفحة الهبوط)</b><label>اسم المؤسسة</label><input name="store_name" value="${esc(s.store_name)}"><label>واتساب (بدون +، مثال 966500000000)</label><input name="whatsapp" inputmode="tel" value="${esc(s.whatsapp)}"><label>رقم الاتصال</label><input name="phone" inputmode="tel" value="${esc(s.phone)}"><label>المدينة</label><input name="city" value="${esc(s.city)}"><label>نسبة ضريبة القيمة المضافة %</label><input name="vat_rate" type="number" value="${esc(s.vat_rate)}"><p><button class="btn">حفظ</button></p></form>
   <form class="card" id="p"><b>تغيير كلمة مروري</b><label>الحالية</label><input type="password" name="old"><label>الجديدة (8+)</label><input type="password" name="new"><p><button class="btn">تغيير</button></p></form></div>`;
   $('#f').onsubmit = guard(async (e) => { e.preventDefault(); await api('/settings', 'PUT', Object.fromEntries(new FormData(e.target))); toast('تم الحفظ'); });
   $('#p').onsubmit = guard(async (e) => { e.preventDefault(); await api('/me/password', 'POST', Object.fromEntries(new FormData(e.target))); e.target.reset(); toast('تم التغيير'); });
